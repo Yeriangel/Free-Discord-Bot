@@ -278,7 +278,7 @@ function renderStatus() {
   btn.className = "btn " + (running ? "btn-danger" : "btn-primary");
   btn.disabled = st === "stopping" || st === "offline";
   if (S.status.user) {
-    $("#brand-avatar").src = S.status.user.avatar;
+    $("#brand-avatar").src = S.status.user.avatar || "logo.svg";
     $("#brand-name").textContent = S.status.user.name;
   }
 }

@@ -1,3 +1,5 @@
+<p align="center"><img src="ui/logo.png" width="128" alt="Free Discord Bot logo"></p>
+
 # מנהל הבוט (Discord Bot Manager)
 
 אפליקציית שולחן עבודה ל-Windows לניהול בוט דיסקורד, בהשראת MEE6.

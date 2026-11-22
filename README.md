@@ -1,3 +1,5 @@
+<p align="center"><img src="ui/logo.png" width="128" alt="Free Discord Bot logo"></p>
+
 # Free Discord Bot
 
 Hello, my name is Yeri, and I'm making a Discord bot inspired by MEE6, and it's **100% free**!

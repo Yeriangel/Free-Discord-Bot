@@ -20,6 +20,7 @@ from botd import paths
 from botd.__main__ import read_session, session_alive
 
 ROOT = Path(__file__).resolve().parent
+ICON = str(ROOT / "ui" / "logo.ico")
 
 
 def _call(session: dict, method: str, path: str) -> dict | None:
@@ -104,12 +105,35 @@ def launch_detached(*args: str) -> None:
                      close_fds=True)
 
 
+def ensure_start_menu_shortcut() -> None:
+    """Adds "Free Discord Bot" (with the app logo) to the Start menu once, so the app can be opened from there."""
+    if os.name != "nt":
+        return
+    try:
+        from botd.shortcut import create_shortcuts
+        create_shortcuts(desktop=False, only_if_missing=True)
+    except Exception:  # noqa: BLE001 - a missing shortcut must never stop the app
+        pass
+
+
+def set_windows_app_id() -> None:
+    """Gives the window its own taskbar entry and icon instead of grouping it under Python."""
+    if os.name == "nt":
+        try:
+            import ctypes
+            from botd.shortcut import APP_ID
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def main() -> int:
+    set_windows_app_id()
     try:
         session = ensure_service(force_restart="--restart" in sys.argv)
     except RuntimeError as exc:
         webview.create_window("Bot Manager: error", html=f"<body style='font-family:Segoe UI;padding:24px'>{exc}</body>")
-        webview.start()
+        webview.start(icon=ICON)
         return 1
 
     url = f"http://127.0.0.1:{session['port']}/#token={session['token']}"
@@ -147,7 +171,8 @@ def main() -> int:
 
     window.events.closed += on_closed
     threading.Thread(target=watch_for_newer_window, daemon=True).start()
-    webview.start(private_mode=True)
+    threading.Thread(target=ensure_start_menu_shortcut, daemon=True).start()
+    webview.start(private_mode=True, icon=ICON)
     return 0
 
 

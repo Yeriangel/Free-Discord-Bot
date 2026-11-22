@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#9a8fff"/>
+      <stop offset="0.55" stop-color="#6d5dfc"/>
+      <stop offset="1" stop-color="#3b2bc4"/>
+    </linearGradient>
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e4e1ff"/>
+    </linearGradient>
+    <radialGradient id="eye" cx="0.5" cy="0.4" r="0.6">
+      <stop offset="0" stop-color="#7ff7e0"/>
+      <stop offset="1" stop-color="#19c2a6"/>
+    </radialGradient>
+  </defs>
+  <!-- tile -->
+  <rect x="8" y="8" width="240" height="240" rx="60" fill="url(#bg)"/>
+  <rect x="8" y="8" width="240" height="120" rx="60" fill="#ffffff" opacity="0.08"/>
+  <!-- antenna -->
+  <rect x="121" y="46" width="14" height="30" rx="7" fill="#ffffff"/>
+  <circle cx="128" cy="44" r="15" fill="#7ff7e0" stroke="#ffffff" stroke-width="7"/>
+  <!-- head with a chat-bubble tail -->
+  <path d="M84 74 H172 A36 36 0 0 1 208 110 V158 A36 36 0 0 1 172 194 H112 L76 222 L82 191 A36 36 0 0 1 48 158 V110 A36 36 0 0 1 84 74 Z"
+        fill="url(#face)"/>
+  <!-- visor -->
+  <rect x="70" y="102" width="116" height="60" rx="30" fill="#1b1640"/>
+  <!-- eyes -->
+  <circle cx="103" cy="132" r="15" fill="url(#eye)"/>
+  <circle cx="153" cy="132" r="15" fill="url(#eye)"/>
+  <circle cx="98" cy="126" r="4.5" fill="#ffffff" opacity="0.9"/>
+  <circle cx="148" cy="126" r="4.5" fill="#ffffff" opacity="0.9"/>
+  <!-- ears -->
+  <rect x="34" y="116" width="16" height="36" rx="8" fill="#ffffff" opacity="0.92"/>
+  <rect x="206" y="116" width="16" height="36" rx="8" fill="#ffffff" opacity="0.92"/>
+</svg>
