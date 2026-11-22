@@ -607,7 +607,11 @@ def create_app(
         try:
             return await updater.install(repo, body.tag)
         except ValueError as exc:
+            log.warning(tr("העדכון נכשל: %s"), exc)
             raise err(400, str(exc))
+        except OSError as exc:  # e.g. a file locked by another program
+            log.exception(tr("העדכון נכשל: %s"), exc)
+            raise err(500, tr("העדכון נכשל: {error}", error=str(exc)[:200]))
 
     # ---- Claude chat ------------------------------------------------------
     @app.get("/api/claude/usage")

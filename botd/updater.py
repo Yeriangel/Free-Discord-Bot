@@ -28,7 +28,9 @@ log = logging.getLogger("botd.updater")
 
 APP_DIR = Path(__file__).resolve().parent.parent
 API = "https://api.github.com"
-ALLOWED_HOSTS = ("github.com", "api.github.com", "objects.githubusercontent.com", "codeload.github.com")
+# GitHub serves release files from these hosts (it moved downloads to release-assets.* in 2025-2026)
+ALLOWED_HOSTS = ("github.com", "api.github.com", "objects.githubusercontent.com", "codeload.github.com",
+                 "release-assets.githubusercontent.com")
 SKIP_DIRS = {".venv", ".git", "__pycache__", "OldVersions", "dist"}
 REPO_RE = re.compile(r"^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$")
 MAX_ZIP = 50 * 1024 * 1024
@@ -139,6 +141,8 @@ async def install(repo: str, tag: str) -> dict:
     except httpx.HTTPError:
         raise ValueError(tr("אין חיבור ל-GitHub")) from None
     if resp.status_code != 200 or len(resp.content) > MAX_ZIP or not _host_ok(str(resp.url)):
+        log.warning("update download rejected: HTTP %s, %d bytes, from %s", resp.status_code, len(resp.content),
+                    httpx.URL(str(resp.url)).host)
         raise ValueError(tr("ההורדה נכשלה"))
     data = resp.content
     try:

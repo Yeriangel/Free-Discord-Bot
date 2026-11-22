@@ -29,6 +29,8 @@ def test_versions_and_hosts():
     assert updater.parse_version("v1.2.10") > updater.parse_version("v1.2.9") > updater.parse_version("1.1")
     assert updater._host_ok("https://github.com/x/y/releases/download/v1/a.zip")
     assert not updater._host_ok("http://github.com/x") and not updater._host_ok("https://evil.com/a.zip")
+    assert updater._host_ok("https://release-assets.githubusercontent.com/github-production-release-asset/1/x?sp=r")
+    assert not updater._host_ok("https://release-assets.githubusercontent.com.evil.com/a.zip")
     assert updater.REPO_RE.match("yeri/Free-Discord-Bot") and not updater.REPO_RE.match("../etc")
     print("ok versions, allowed hosts, repo names")
 

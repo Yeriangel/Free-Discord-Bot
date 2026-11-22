@@ -404,6 +404,9 @@ S = {
     '🚀 בוצעה': ('🚀 Done', '🚀 Выполнено', '🚀 تم التنفيذ'),
     '🤔 בבדיקה': ('🤔 Considering', '🤔 Рассматривается', '🤔 قيد الدراسة'),
 
+    'העדכון נכשל: %s': ('The update failed: %s', 'Обновление не удалось: %s', 'فشل التحديث: %s'),
+    'העדכון נכשל: {error}': ('The update failed: {error}', 'Обновление не удалось: {error}', 'فشل التحديث: {error}'),
+
     # ---- app UI ----
     'TikTok ו-X (טוויטר) לא נתמכים: אין להם API או פיד חינמי. בפעם הראשונה הבוט רק זוכר מה כבר קיים, ומתריע רק על תוכן חדש.':
         ("TikTok and X (Twitter) aren't supported: they have no free API or feed. On the first check the bot only remembers what already exists, and alerts only about new content.",
