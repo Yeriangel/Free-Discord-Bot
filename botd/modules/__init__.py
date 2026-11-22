@@ -22,9 +22,10 @@ from .social_alerts import SocialAlerts
 from .starboard import Activity, Starboard
 from .suggestions import Suggestions
 from .ticketing import Ticketing
+from .tools import Tools
 from .warn_system import Warnings
 from .welcome import Welcome
 
 COGS = [Activity, Welcome, AutoRole, ReactionRoles, CustomCommands, ServerLogs, Warnings, AutoMod, RestrictedChannels,
         Moderation, Levels, Economy, Automations, Starboard, InviteTracker, Ticketing, Suggestions, Polls, Reminders,
-        StatsChannels, TempChannels, AFK, SocialAlerts, Giveaways, Birthdays, ClaudeChat]
+        StatsChannels, TempChannels, AFK, SocialAlerts, Giveaways, Birthdays, Tools, ClaudeChat]

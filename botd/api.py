@@ -263,6 +263,25 @@ def create_app(
                       portal=True)
         return manager.status()
 
+    @app.post("/api/user-install")
+    async def user_install():
+        """Turns on "Add App" (user install) for the bot and returns the link people use to add it."""
+        from . import secrets_store
+
+        token = secrets_store.get("bot_token")
+        if not token:
+            raise err(400, tr("לא הוגדר Bot Token. הוסף אותו בעמוד 'חיבור והגדרות'."))
+        try:
+            result = await discord_rest.enable_user_install(token)
+        except discord_rest.DiscordAPIError as exc:
+            raise err(400, tr("דיסקורד לא איפשר להפעיל אוטומטית ({error}). הפעל ידנית ב-Developer Portal, בלשונית Installation.",
+                              error=exc.message), portal=True)
+        if not result["enabled"]:
+            raise err(400, tr("דיסקורד לא איפשר להפעיל אוטומטית. הפעל ידנית ב-Developer Portal, בלשונית Installation (User Install)."),
+                      portal=True)
+        log.info(tr("התקנה לחשבון (Add App) הופעלה לבוט"))
+        return result
+
     # ---- settings & secrets ---------------------------------------------
     @app.get("/api/settings")
     async def get_settings():

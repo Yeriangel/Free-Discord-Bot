@@ -215,6 +215,7 @@ class BotManager:
                 "id": str(bot.user.id),
                 "name": bot.user.name,
                 "avatar": bot.user.display_avatar.with_size(128).url,
+                "has_avatar": bot.user.avatar is not None,
             }
         latency = None
         if bot is not None and self.state == "connected" and bot.latency == bot.latency:  # not NaN

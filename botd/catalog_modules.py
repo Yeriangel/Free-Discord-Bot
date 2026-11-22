@@ -322,3 +322,8 @@ MODULES = [
 from .catalog_new import NEW_MODULES  # noqa: E402
 
 MODULES = [NEW_MODULES.get(m["key"], m) for m in MODULES]
+# brand-new modules (not a former placeholder) go after the last module of their category
+for _new in NEW_MODULES.values():
+    if all(m["key"] != _new["key"] for m in MODULES):
+        _last = max((i for i, m in enumerate(MODULES) if m["category"] == _new["category"]), default=len(MODULES) - 1)
+        MODULES.insert(_last + 1, _new)

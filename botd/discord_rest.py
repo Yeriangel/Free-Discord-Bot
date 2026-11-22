@@ -105,6 +105,26 @@ async def enable_intents(token: str) -> dict:
     return intents_from_flags(int(new.get("flags") or 0))
 
 
+USER_INSTALL = "1"  # integration type 1 = installed to a user account ("Add App")
+
+
+def user_install_link(app_id: str) -> str:
+    return f"https://discord.com/oauth2/authorize?client_id={app_id}&integration_type=1&scope=applications.commands"
+
+
+async def enable_user_install(token: str) -> dict:
+    """Lets people add the bot to their own Discord account ("Add App"), so its commands work in DMs and in any
+    server. Keeps the existing server-install settings as they are."""
+    app = await _request("GET", "/applications/@me", token)
+    config = dict(app.get("integration_types_config") or {})
+    if USER_INSTALL not in config:
+        config.setdefault("0", {})
+        config[USER_INSTALL] = {}
+        app = await _request("PATCH", "/applications/@me", token, json={"integration_types_config": config})
+    enabled = USER_INSTALL in (app.get("integration_types_config") or {})
+    return {"enabled": enabled, "link": user_install_link(str(app["id"]))}
+
+
 def validate_avatar_data_uri(data_uri: str) -> str:
     """Checks a data: URI from the UI and returns it in the form Discord accepts."""
     if not data_uri.startswith("data:") or ";base64," not in data_uri:

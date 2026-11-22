@@ -22,11 +22,10 @@ const GENERAL_NAV = [
   { page: "profile", icon: "🖼", label: "פרופיל הבוט", sub: "Bot Personalizer" },
   { page: "permissions", icon: "🛡", label: "הרשאות והזמנה" },
   { page: "updates", icon: "⟳", label: "עדכונים" },
-  { page: "console", icon: "⌨", label: "קונסול", sub: "Console" },
   { page: "customize", icon: "🎨", label: "התאמה אישית", sub: "Customize" },
 ];
 const CAT_ICONS = { essentials: "⭐", server_management: "🛠", automations: "⚡", utilities: "🧰", social: "📣", games: "🎮", ai: "✦" };
-const NONE_IMG = "data:image/gif;base64,R0lGODlhAQABAAAAACw=";
+const NONE_IMG = "logo.png";  // the app logo stands in wherever the bot has no picture yet
 
 const S = {
   page: "dashboard",
@@ -309,7 +308,7 @@ function renderStatus() {
   btn.className = "btn " + (running ? "btn-danger" : "btn-primary");
   btn.disabled = st === "stopping" || st === "offline";
   if (S.status.user) {
-    $("#brand-avatar").src = S.status.user.avatar || "logo.svg";
+    $("#brand-avatar").src = S.status.user.has_avatar === false ? "logo.svg" : (S.status.user.avatar || "logo.svg");
     $("#brand-name").textContent = S.status.user.name;
   }
 }
@@ -399,7 +398,7 @@ function render() {
   $("#page-title").textContent = pageTitle();
   const main = $("#main");
   const p = S.page;
-  if (p === "dashboard") { main.innerHTML = viewDashboard(); renderDashboardStats(); renderLogs(); }
+  if (p === "dashboard") { main.innerHTML = viewDashboard(); renderDashboardStats(); afterConsoleRender(); }
   else if (p === "connection") main.innerHTML = viewConnection();
   else if (p === "profile") {
     main.innerHTML = viewProfile();
@@ -409,7 +408,7 @@ function render() {
   }
   else if (p === "permissions") main.innerHTML = viewPermissions();
   else if (p === "updates") { main.innerHTML = viewUpdates(); loadUpdates(); }
-  else if (p === "console") { main.innerHTML = viewConsole(); afterConsoleRender(); }
+  else if (p === "console") { S.page = "dashboard"; render(); return; }  // the console is part of the dashboard now
   else if (p === "customize") { main.innerHTML = viewCustomize(); afterCustomizeRender(); }
   else if (p.startsWith("cat:")) main.innerHTML = viewCategory(p.slice(4));
   else if (p.startsWith("mod:")) { main.innerHTML = viewModulePage(p.slice(4)); afterModuleRender(p.slice(4)); }
@@ -420,17 +419,7 @@ function viewDashboard() {
   return `
     <div class="section"><div id="dash-stats" class="grid grid-4"></div></div>
     <div id="dash-notice"></div>
-    <div class="section">
-      <div class="row" style="margin-bottom:10px">
-        <div class="section-title">לוגים חיים</div>
-        <div class="spacer"></div>
-        <select id="log-filter" style="width:auto">
-          ${["ALL", "INFO", "WARNING", "ERROR"].map((l) => `<option ${S.logFilter === l ? "selected" : ""} value="${l}">${l === "ALL" ? "הכל" : l}</option>`).join("")}
-        </select>
-        <button class="btn btn-sm" data-action="clear-logs">נקה תצוגה</button>
-      </div>
-      <div id="logs" class="logs"></div>
-    </div>`;
+    ${viewConsole()}`;
 }
 
 function renderDashboardStats() {
@@ -664,6 +653,7 @@ function viewProfile() {
   const avatarUndo = server ? (S.spAvatar ? `<button class="btn btn-sm btn-ghost" data-action="sp-discard" data-field="avatar">${esc(t("בטל תמונה"))}</button>`
       : v.ownAvatar ? `<button class="btn btn-sm btn-ghost" data-action="sp-reset" data-field="avatar">${esc(t("חזרה לתמונה הרגילה"))}</button>` : "")
     : (S.avatarDraft ? `<button class="btn btn-sm btn-ghost" data-action="discard-avatar">בטל תמונה</button>` : "");
+  const useLogo = `<button class="btn btn-sm" data-action="avatar-use-logo" data-scope="${server ? "server" : "default"}">${esc(t("השתמש בלוגו של האפליקציה"))}</button>`;
   const bannerUndo = server ? (S.spBanner ? `<button class="btn btn-sm btn-ghost" data-action="sp-discard" data-field="banner">${esc(t("בטל באנר"))}</button>`
       : v.ownBanner ? `<button class="btn btn-sm btn-ghost" data-action="sp-reset" data-field="banner">${esc(t("חזרה לבאנר הרגיל"))}</button>` : "")
     : (S.bannerDraft ? `<button class="btn btn-sm btn-ghost" data-action="discard-banner">בטל באנר</button>` : "");
@@ -680,7 +670,7 @@ function viewProfile() {
         <div class="field"><span class="label">אייקון</span>
           <label class="pz-icon file-btn"><img id="avatar-preview" alt="" src="${esc(v.avatar)}">
             <input type="file" id="${ids.avatar}" accept="image/png,image/jpeg,image/gif,image/webp"><span class="pz-edit">✎</span></label>
-          ${avatarUndo}
+          <div class="row" style="gap:6px;flex-wrap:wrap">${useLogo}${avatarUndo}</div>
         </div>
         <div class="field"><span class="label">באנר (רקע)</span>
           <label class="pz-banner file-btn" style="${v.banner ? `background-image:url('${esc(v.banner)}')` : ""}">
@@ -1379,6 +1369,15 @@ function moduleExtras(key) {
       <input type="text" id="bday-name" placeholder="${esc(t("שם או מזהה משתמש"))}" style="max-width:240px">
       <input type="text" id="bday-date" class="ltr" placeholder="24/12" style="max-width:140px">
       <button class="btn btn-primary" data-action="bday-add">${esc(t("הוסף"))}</button></div></div>`;
+  if (key === "tools") out += `<div class="card section">
+    <div class="row"><h3>${esc(t("הוספה לחשבון (Add App)"))}</h3></div>
+    <p class="desc">${esc(t("אפשר להוסיף את הבוט לחשבון דיסקורד, ואז הפקודות האלה עובדות גם בהודעות פרטיות ובכל שרת, גם בשרתים שהבוט לא נמצא בהם. לחץ כדי להפעיל את זה ולקבל את הקישור."))}</p>
+    <div class="row" style="margin-top:10px;flex-wrap:wrap">
+      <button class="btn btn-primary" data-action="user-install">${esc(t("הפעל וקבל קישור"))}</button>
+      <input type="text" id="user-install-link" class="ltr grow" readonly placeholder="https://discord.com/oauth2/authorize?…" style="min-width:260px">
+      <button class="btn" data-action="copy-user-install">${esc(t("העתק"))}</button>
+    </div>
+    <p class="muted small" style="margin-top:8px">${esc(t("פתח את הקישור בדפדפן ובחר 'Add to My Apps'. /gif צריך ffmpeg במחשב הזה (winget install ffmpeg)."))}</p></div>`;
   const tbl = EXTRA_TABLES[key];
   if (tbl) out += `<div class="card section"><div class="row"><h3>${esc(t(tbl.title))}</h3><div class="spacer"></div>
     <button class="btn btn-sm" data-action="extra-reload">${esc(t("רענן"))}</button></div><div id="extra-list" class="muted small" style="margin-top:10px">${esc(t("טוען…"))}</div></div>`;
@@ -1672,6 +1671,14 @@ const actions = {
     });
   },
   "discard-avatar"() { S.avatarDraft = null; render(); },
+  async "avatar-use-logo"(btn) {
+    // puts the app logo in as the new picture (a draft: it reaches Discord only after Save)
+    const blob = await (await fetch("logo.png")).blob();
+    const data = await new Promise((ok) => { const r = new FileReader(); r.onload = () => ok(r.result); r.readAsDataURL(blob); });
+    if (btn.dataset.scope === "server") { S.spAvatar = data; $("#main").innerHTML = viewProfile(); }
+    else { S.avatarDraft = data; render(); }
+    toast(t("הלוגו נבחר. לחץ שמור כדי להחיל אותו על הבוט."), "ok");
+  },
   "discard-banner"() { S.bannerDraft = null; render(); },
   "perm-recommended"() { S.permSel = new Set(S.catalog.recommended_permissions); render(); },
   "perm-none"() { S.permSel = new Set(); render(); },
@@ -1774,6 +1781,18 @@ const actions = {
       S.invite = await api("POST", "/invite", { permissions: [...S.permSel], guild_id: $("#invite-guild").value, account: ($("#invite-account") || {}).value || "" });
       render();
     });
+  },
+  async "user-install"(btn) {
+    await guarded(btn, async () => {
+      const res = await api("POST", "/user-install");
+      $("#user-install-link").value = res.link;
+      toast(t("Add App הופעל. העתק את הקישור ופתח אותו בדפדפן."), "ok");
+    });
+  },
+  async "copy-user-install"() {
+    const v = $("#user-install-link").value;
+    if (!v) { toast(t("לחץ קודם 'הפעל וקבל קישור'."), "error"); return; }
+    try { await navigator.clipboard.writeText(v); toast("הועתק", "ok"); } catch { toast(v, "ok"); }
   },
   async "copy-invite"() {
     try { await navigator.clipboard.writeText(S.invite.url); toast("הועתק", "ok"); }
@@ -1959,9 +1978,12 @@ function viewConsole() {
   return `
     <div class="console-grid">
       <div class="card section">
-        <div class="row"><h3>${esc(t("קונסול"))}</h3><div class="spacer"></div>
-          <span class="muted small">${esc(t("הקלד help כדי לראות את כל הפקודות"))}</span>
+        <div class="row"><h3>${esc(t("לוגים חיים וקונסול"))}</h3><div class="spacer"></div>
+          <select id="log-filter" style="width:auto">
+            ${["ALL", "INFO", "WARNING", "ERROR"].map((l) => `<option ${S.logFilter === l ? "selected" : ""} value="${l}">${l === "ALL" ? "הכל" : l}</option>`).join("")}
+          </select>
           <button class="btn btn-sm btn-ghost" data-action="console-clear">${esc(t("נקה"))}</button></div>
+        <div class="muted small" style="margin-top:4px">${esc(t("הקלד help כדי לראות את כל הפקודות"))}</div>
         <div id="logs" class="logs console-logs" style="margin-top:10px"></div>
         <div class="console-input ltr"><span class="prompt">›</span>
           <input id="console-input" autocomplete="off" spellcheck="false" placeholder="help · status · say #general hi · module GOLA levels on"></div>
@@ -2005,7 +2027,7 @@ async function afterConsoleRender() {
   const gid = S.chatGuild || S.guildId;
   if (gid) await loadChatChannels(gid);
   clearInterval(chatTimer);
-  chatTimer = setInterval(() => { if (S.page === "console" && S.chatChannel) loadChatMessages(true); else if (S.page !== "console") clearInterval(chatTimer); }, 5000);
+  chatTimer = setInterval(() => { if (S.page === "dashboard" && S.chatChannel) loadChatMessages(true); else if (S.page !== "dashboard") clearInterval(chatTimer); }, 5000);
 }
 
 async function loadChatChannels(gid) {
