@@ -5,7 +5,7 @@ import discord
 from ..i18n import N_, tr
 from discord.ext import commands
 
-from .common import COLOR_DANGER, COLOR_INFO, COLOR_OK, COLOR_WARN, user_line
+from .common import COLOR_DANGER, COLOR_INFO, COLOR_OK, COLOR_WARN, themed, user_line
 
 
 NO_TEXT = N_("*(ללא טקסט)*")
@@ -28,7 +28,7 @@ class ServerLogs(commands.Cog):
 
     async def _send(self, guild, event, title, color, fields=(), description=None):
         lang = self.bot.lang(guild)
-        embed = discord.Embed(title=tr(title, lang), color=color, description=description, timestamp=discord.utils.utcnow())
+        embed = discord.Embed(title=tr(title, lang), color=themed(lang, color), description=description, timestamp=discord.utils.utcnow())
         for name, value in fields:
             embed.add_field(name=tr(name, lang), value=tr(value, lang) if value in _FIXED else value, inline=False)
         await self.bot.send_log(guild, embed, event)

@@ -9,7 +9,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from .common import has_any_role, parse_duration, relative_time, reply_off
+from .common import has_any_role, parse_duration, relative_time, reply_off, themed
 
 log = logging.getLogger("botd.giveaways")
 _rng = random.SystemRandom()
@@ -36,7 +36,7 @@ def giveaway_embed(gw: dict, lang: str, entries: int | None = None, winners: lis
     if entries is not None:
         lines.append(tr("משתתפים: {n}", lang, n=entries))
     embed = discord.Embed(title=f"🎉 {gw['prize']}", description="\n".join(lines),
-                          color=0x2FBF71 if winners is None else 0x5865F2)
+                          color=themed(lang, 0x2FBF71 if winners is None else 0x5865F2))
     embed.set_footer(text=f"#{gw['id']}" + (" · " + tr("ההגרלה הסתיימה", lang) if winners is not None else ""))
     return embed
 

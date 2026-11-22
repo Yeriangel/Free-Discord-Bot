@@ -9,7 +9,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from ..i18n import N_, tr
-from .common import COLOR_OK, COLOR_WARN, mod_embed
+from .common import COLOR_OK, COLOR_WARN, mod_embed, themed
 from .moderation import ask_confirm
 
 log = logging.getLogger("botd.warnings")
@@ -149,7 +149,7 @@ class Warnings(commands.Cog):
         rows = self.bot.store.list_warnings(str(interaction.guild_id), str(member.id), limit=15)
         if not rows:
             return await interaction.response.send_message(tr("ל-{user} אין אזהרות.", lang, user=member), ephemeral=True)
-        embed = discord.Embed(title=tr("אזהרות של {user}", lang, user=member), color=COLOR_WARN)
+        embed = discord.Embed(title=tr("אזהרות של {user}", lang, user=member), color=themed(lang, COLOR_WARN))
         for r in rows:
             embed.add_field(name=f"#{r['id']} · <t:{int(r['created'])}:R>",
                             value=r["reason"][:200] + "\n" + tr("על ידי: {name}", lang, name=r["moderator_name"]), inline=False)

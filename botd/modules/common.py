@@ -9,6 +9,28 @@ COLOR_OK = 0x2FBF71
 COLOR_WARN = 0xF0B232
 COLOR_DANGER = 0xEF4B5F
 
+# Every embed color the bot uses, by name. Servers can change each one (app: Customize -> Colors & emojis).
+PALETTE = {"info": COLOR_INFO, "success": COLOR_OK, "warning": COLOR_WARN, "danger": COLOR_DANGER,
+           "brand": 0x6D5DFC, "starboard": 0xF5C542, "birthdays": 0xF47FFF, "done": 0x3BA55C}
+_PALETTE_BY_VALUE = {v: k for k, v in PALETTE.items()}
+EMOJIS = {"vote_up": "👍", "vote_down": "👎", "giveaway": "🎉", "ticket": "🎫", "close": "🔒"}
+
+
+def themed(lang, value: int) -> int:
+    """The server's own color for one of the palette colors (unchanged if the server did not set one)."""
+    name = _PALETTE_BY_VALUE.get(value)
+    custom = (getattr(lang, "colors", None) or {}).get(name) if name else None
+    if custom:
+        try:
+            return int(str(custom).lstrip("#"), 16)
+        except ValueError:
+            pass
+    return value
+
+
+def emoji(lang, name: str) -> str:
+    return (getattr(lang, "emojis", None) or {}).get(name) or EMOJIS[name]
+
 
 def human_duration(seconds: float, lang: str = "he") -> str:
     seconds = max(0, int(seconds))
@@ -74,7 +96,7 @@ def user_line(user: discord.abc.User) -> str:
 def mod_embed(action: str, target: discord.abc.User, moderator: discord.abc.User | None,
               reason: str | None, color: int = COLOR_DANGER, extra: str = "", lang: str = "he") -> discord.Embed:
     """`action` is already translated by the caller."""
-    embed = discord.Embed(title=action, color=color, timestamp=discord.utils.utcnow())
+    embed = discord.Embed(title=action, color=themed(lang, color), timestamp=discord.utils.utcnow())
     embed.add_field(name=tr("משתמש", lang), value=user_line(target), inline=False)
     if moderator is not None:
         embed.add_field(name=tr("בוצע על ידי", lang), value=user_line(moderator), inline=False)

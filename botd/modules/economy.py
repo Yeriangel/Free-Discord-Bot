@@ -10,7 +10,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from .common import can_manage_role
+from .common import can_manage_role, themed
 
 log = logging.getLogger("botd.economy")
 
@@ -199,7 +199,7 @@ class Economy(commands.Cog):
         medals = {1: "🥇", 2: "🥈", 3: "🥉"}
         lines = [f"{medals.get(i, f'`#{i}`')} <@{r['user_id']}> · {cfg['currency_icon']} {r['balance']:,}" for i, r in enumerate(rows, 1)]
         await interaction.response.send_message(embed=discord.Embed(title=tr("💰 העשירים · {server}", cfg.get("_lang", "he"), server=interaction.guild.name),
-                                                                    description="\n".join(lines), color=0xF0B232))
+                                                                    description="\n".join(lines), color=themed(cfg.get("_lang", "he"), 0xF0B232)))
 
     # ---- shop -------------------------------------------------------------------------
     @app_commands.command(name="shop", description=N_("החנות של השרת"))
@@ -210,7 +210,7 @@ class Economy(commands.Cog):
             return await self._off(interaction)
         if not cfg["items"]:
             return await interaction.response.send_message(tr("החנות ריקה כרגע.", cfg.get("_lang", "he")), ephemeral=True)
-        embed = discord.Embed(title=tr("🛒 החנות · {server}", cfg.get("_lang", "he"), server=interaction.guild.name), color=0x6D5DFC)
+        embed = discord.Embed(title=tr("🛒 החנות · {server}", cfg.get("_lang", "he"), server=interaction.guild.name), color=themed(cfg.get("_lang", "he"), 0x6D5DFC))
         gid = str(interaction.guild_id)
         for item in cfg["items"][:25]:
             left = ""

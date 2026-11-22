@@ -35,10 +35,30 @@ def _call(session: dict, method: str, path: str) -> dict | None:
         return None
 
 
+def running_build(session: dict | None) -> str | None:
+    """Version + code fingerprint of an already running service (None if none is running)."""
+    if not session_alive(session):
+        return None
+    ping = _call(session, "GET", "/ping") or {}
+    return f"{ping.get('version', '')}/{ping.get('build', '')}"
+
+
+def stop_old_service(session: dict, timeout: float = 15.0) -> None:
+    _call(session, "POST", "/shutdown")
+    deadline = time.time() + timeout
+    while time.time() < deadline and session_alive(session):
+        time.sleep(0.3)
+
+
 def ensure_service(timeout: float = 20.0) -> dict:
+    from botd import __version__, build_id
+
     session = read_session()
-    if session_alive(session):
+    running = running_build(session)
+    if running is not None and running == f"{__version__}/{build_id()}":
         return session
+    if running is not None:  # the service runs older code than the files on disk (update or new build): restart it
+        stop_old_service(session)
 
     exe = Path(sys.executable)
     pythonw = exe.with_name("pythonw.exe")

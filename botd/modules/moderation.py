@@ -8,7 +8,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from ..i18n import N_, tr
-from .common import COLOR_DANGER, COLOR_OK, COLOR_WARN, mod_embed
+from .common import COLOR_DANGER, COLOR_OK, COLOR_WARN, mod_embed, themed
 
 log = logging.getLogger("botd.moderation")
 
@@ -43,7 +43,7 @@ class ConfirmView(discord.ui.View):
 async def ask_confirm(interaction: discord.Interaction, title: str, description: str, lang: str) -> bool:
     """Ephemeral confirm dialog with buttons. Returns True if the invoker pressed confirm."""
     view = ConfirmView(interaction.user.id, lang)
-    embed = discord.Embed(title=title, description=description or None, color=COLOR_WARN)
+    embed = discord.Embed(title=title, description=description or None, color=themed(lang, COLOR_WARN))
     embed.set_footer(text=tr("הבקשה תפוג בעוד 30 שניות", lang))
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
     await view.wait()

@@ -7,7 +7,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from .common import COLOR_INFO, has_any_role, reply_off, text_channel
+from .common import COLOR_INFO, has_any_role, reply_off, text_channel, themed
 from .welcome import parse_color
 
 log = logging.getLogger("botd.tickets")
@@ -51,7 +51,7 @@ class Ticketing(commands.Cog):
         if channel is None:
             raise ValueError(tr("בחר ערוץ לכפתור ושמור"))
         embed = discord.Embed(title=cfg["panel_title"][:256] or None, description=cfg["panel_message"][:4000] or None,
-                              color=COLOR_INFO)
+                              color=themed(cfg["_lang"], COLOR_INFO))
         return await channel.send(embed=embed, view=TicketPanelView(self, cfg["button_label"] or "🎫"))
 
     async def open_ticket(self, interaction: discord.Interaction) -> None:
@@ -114,7 +114,7 @@ class Ticketing(commands.Cog):
         channel = text_channel(guild, cfg["log_channel_id"])
         if channel is not None:
             try:
-                await channel.send(embed=discord.Embed(description=text, color=parse_color("#6D5DFC")),
+                await channel.send(embed=discord.Embed(description=text, color=themed(cfg["_lang"], parse_color("#6D5DFC"))),
                                    allowed_mentions=discord.AllowedMentions.none())
             except discord.HTTPException:
                 pass

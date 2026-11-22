@@ -18,6 +18,7 @@ DEFAULT_SETTINGS = {
     "autostart_bot": False,
     "ui_lang": "he",
     "presence": {"status": "online", "activity": "none", "text": "", "url": ""},
+    "appearance": {},
 }
 
 PRESENCE_STATUSES = ("online", "idle", "dnd", "invisible")
@@ -135,6 +136,9 @@ class Store(FeatureStoreMixin):
             if activity not in ("none",) and not text:
                 raise ValueError(tr("צריך לכתוב טקסט לפעילות"))
             clean["presence"] = {"status": status, "activity": activity, "text": text, "url": url}
+        if "appearance" in clean:
+            from .customize import validate_appearance
+            clean["appearance"] = validate_appearance(clean["appearance"] if isinstance(clean["appearance"], dict) else {})
         for key in ("keep_running_on_close", "autostart_bot"):
             if key in clean:
                 clean[key] = bool(clean[key])
@@ -236,6 +240,19 @@ class Store(FeatureStoreMixin):
     def guild_lang(self, gid: str) -> str:
         guild = self.get_guild(gid)
         return ((guild or {}).get("config", {}).get("_server") or {}).get("language", "he")
+
+    def guild_custom(self, gid: str) -> dict:
+        """This server's own bot texts, colors and emojis (Customize page)."""
+        raw = ((self.get_guild(gid) or {}).get("config", {}).get("_custom") or {})
+        return {"texts": dict(raw.get("texts") or {}), "colors": dict(raw.get("colors") or {}),
+                "emojis": dict(raw.get("emojis") or {})}
+
+    def guild_lang_obj(self, gid: str):
+        """The server's bot language, carrying its custom texts/colors/emojis (see i18n.Lang)."""
+        from .i18n import Lang
+
+        custom = self.guild_custom(gid)
+        return Lang(self.guild_lang(gid), custom["texts"], custom["colors"], custom["emojis"])
 
     def set_guild_lang(self, gid: str, lang: str) -> dict:
         return self.set_config(gid, "_server", {"language": lang})

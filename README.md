@@ -8,7 +8,10 @@ You run it on your own computer and manage it from a desktop app, in Hebrew, Eng
 You can also connect the bot to the **Claude API** and talk with it using the model of your choice:
 **Haiku**, **Sonnet** or **Opus**. I recommend **Haiku**, because it uses the fewest credits.
 
-> **About cost:** the Claude API is billed separately from Claude Pro / Max subscriptions.
+Prefer **ChatGPT** or **Grok**? Add an OpenAI or xAI API key instead and pick the provider on the AI Chat page.
+
+> **About cost:** the Claude API is billed separately from Claude Pro / Max subscriptions (the same goes for the
+> OpenAI and xAI APIs vs ChatGPT Plus / X Premium).
 > To use it you need API credits in the [Anthropic Console](https://console.anthropic.com/). Haiku is very cheap,
 > and the app shows an estimated cost and lets you set a daily limit.
 
@@ -39,8 +42,8 @@ You can also just **reply** to the bot instead of mentioning it every time.
 | Utilities | Polls (Discord's own), Embed Messages, Reminders (repeating + `/remind`), Statistics Channels, Temporary Voice Channels, AFK |
 | Social Alerts | YouTube, Twitch, Reddit and any RSS feed (TikTok and X have no free API, so they are not supported) |
 | Games & Fun | Economy (currency, `/daily` streaks, dice, guess, roulette, rock-paper-scissors, shop, boosts), Giveaways, Birthdays |
-| AI | Chat with Claude (Haiku / Sonnet / Opus), server actions with confirmation, saves birthdays / reminders / giveaways / polls you mention (after you confirm) |
-| App | Bot Personalizer (avatar, banner, status, activity), per-server profiles, invite link builder with minimal permissions, live logs, Ctrl+K search, online updates with rollback |
+| AI | Chat with **Claude** (Haiku / Sonnet / Opus), **ChatGPT** (GPT-6 Luna / Terra / Sol / Astra) or **Grok** (4.3 / 4.7), all with the same powers: server actions with confirmation, saves birthdays / reminders / giveaways / polls you mention (after you confirm) |
+| App | Bot Personalizer (avatar, banner, status, activity), **Console** (typed commands + talk as the bot), **Customize everything** (every bot message, embed colors and emojis per server, slash command names, app theme and custom CSS), per-server profiles, invite link builder with minimal permissions, live logs, Ctrl+K search, online updates with rollback |
 
 Tell the bot "John's birthday is on 24/12" and it offers to add it to Birthdays; it saves it only after you click
 **Confirm** or type "yes". It can also answer questions like "who talks the most here?" from its own message count.

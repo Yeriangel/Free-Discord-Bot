@@ -22,6 +22,8 @@ const GENERAL_NAV = [
   { page: "profile", icon: "🖼", label: "פרופיל הבוט", sub: "Bot Personalizer" },
   { page: "permissions", icon: "🛡", label: "הרשאות והזמנה" },
   { page: "updates", icon: "⟳", label: "עדכונים" },
+  { page: "console", icon: "⌨", label: "קונסול", sub: "Console" },
+  { page: "customize", icon: "🎨", label: "התאמה אישית", sub: "Customize" },
 ];
 const CAT_ICONS = { essentials: "⭐", server_management: "🛠", automations: "⚡", utilities: "🧰", social: "📣", games: "🎮", ai: "✦" };
 const NONE_IMG = "data:image/gif;base64,R0lGODlhAQABAAAAACw=";
@@ -364,6 +366,8 @@ function render() {
   else if (p === "profile") { main.innerHTML = viewProfile(); loadProfile(); }
   else if (p === "permissions") main.innerHTML = viewPermissions();
   else if (p === "updates") { main.innerHTML = viewUpdates(); loadUpdates(); }
+  else if (p === "console") { main.innerHTML = viewConsole(); afterConsoleRender(); }
+  else if (p === "customize") { main.innerHTML = viewCustomize(); afterCustomizeRender(); }
   else if (p.startsWith("cat:")) main.innerHTML = viewCategory(p.slice(4));
   else if (p.startsWith("mod:")) { main.innerHTML = viewModulePage(p.slice(4)); afterModuleRender(p.slice(4)); }
 }
@@ -465,6 +469,11 @@ function viewConnection() {
     </div>
     ${secretField("bot_token", "Bot Token", t('מ-<a href="https://discord.com/developers/applications" target="_blank">Developer Portal</a>, בלשונית Bot, לוחצים Reset Token.'))}
     ${secretField("anthropic_key", "Anthropic API Key", t('מ-<a href="https://console.anthropic.com/settings/keys" target="_blank">Anthropic Console</a>. משמש לצ\'אט עם Claude.'))}
+    <details class="card section"><summary><b>${esc(t("ChatGPT ו-Grok (לא חובה, במקום Claude)"))}</b></summary>
+      <p class="desc" style="margin:10px 0">${esc(t("בוחרים את הספק בעמוד 'צ'אט AI'. המפתחות נשמרים ב-Windows Credential Manager, כמו כל השאר."))}</p>
+      ${secretField("openai_key", "OpenAI API Key (ChatGPT)", t('מ-<a href="https://platform.openai.com/api-keys" target="_blank">OpenAI Platform</a>. החיוב נפרד ממנוי ChatGPT Plus.'))}
+      ${secretField("xai_key", "xAI API Key (Grok)", t('מ-<a href="https://console.x.ai" target="_blank">xAI Console</a>. החיוב נפרד ממנוי X Premium.'))}
+    </details>
     <details class="card section"><summary><b>${esc(t("Twitch (לא חובה, להתראות רשתות)"))}</b></summary>
       <p class="desc" style="margin:10px 0">${t('יוצרים אפליקציה חינמית ב-<a href="https://dev.twitch.tv/console/apps" target="_blank">Twitch Developer Console</a> (OAuth Redirect: http://localhost) ומעתיקים את ה-Client ID וה-Client Secret.')}</p>
       ${secretField("twitch_client_id", "Twitch Client ID", "")}
@@ -1241,14 +1250,16 @@ function collectModuleForm(key) {
 /* ===== Claude chat status ===== */
 function viewClaudeStatus() {
   const set = S.settings ? S.settings.settings : {};
-  const key = S.settings ? S.settings.secrets.anthropic_key.set : false;
+  const prov = (S.guild && S.guild.config.claude_chat && S.guild.config.claude_chat.provider) || "claude";
+  const PROV = { claude: ["anthropic_key", "Anthropic API Key"], openai: ["openai_key", "OpenAI API Key"], grok: ["xai_key", "xAI API Key"] }[prov] || ["anthropic_key", "Anthropic API Key"];
+  const key = S.settings ? S.settings.secrets[PROV[0]].set : false;
   const check = (ok, yes, no) => `<div class="row"><span class="badge ${ok ? "badge-ok" : "badge-danger"}">${ok ? "✓" : "✕"}</span><span>${ok ? yes : no}</span></div>`;
   return `
     <div class="card section">
       <h3>מצב הצ'אט</h3>
       <div class="grid" style="grid-template-columns:1fr 1fr;margin-top:10px">
         <div class="grid" style="gap:8px">
-          ${check(key, "Anthropic API Key שמור", "חסר Anthropic API Key")}
+          ${check(key, t("{key} שמור", { key: PROV[1] }), t("חסר {key}", { key: PROV[1] }))}
           ${check(!!set.allowed_user_id, `משתמש מורשה: <span class="ltr">${esc(set.allowed_user_id)}</span>`, "לא הוגדר User ID מורשה: הבוט לא יענה לאף אחד")}
           <div class="row"><span class="badge">#</span><span>${set.allowed_channel_id ? `ערוץ מורשה: <span class="ltr">${esc(set.allowed_channel_id)}</span>` : "כל ערוץ (בתיוג) והודעות פרטיות"}</span></div>
           <div class="muted small">${t('משנים את אלה בעמוד <a href="#" data-nav="connection">חיבור והגדרות</a>.')}</div>
@@ -1568,6 +1579,321 @@ const actions = {
   search() { openSearch(); },
 };
 
+/* ===== app look (theme, colors, font, custom CSS) ===== */
+const LIGHT_VARS = { "--bg": "#f4f5f9", "--panel": "#ffffff", "--panel-2": "#eef0f5", "--border": "#d9dce5", "--text": "#1c1f2a", "--muted": "#5d6475" };
+function applyAppearance(a) {
+  a = a || {};
+  const root = document.documentElement.style;
+  ["--bg", "--panel", "--panel-2", "--border", "--text", "--muted", "--accent", "--accent-2", "--radius"].forEach((v) => root.removeProperty(v));
+  if (a.theme === "light") Object.entries(LIGHT_VARS).forEach(([k, v]) => root.setProperty(k, v));
+  if (a.accent) { root.setProperty("--accent", a.accent); root.setProperty("--accent-2", a.accent); }
+  if (a.background) root.setProperty("--bg", a.background);
+  if (a.surface) { root.setProperty("--panel", a.surface); root.setProperty("--panel-2", a.surface); }
+  if (a.text) root.setProperty("--text", a.text);
+  if (a.radius !== undefined && a.radius !== "") root.setProperty("--radius", a.radius + "px");
+  document.documentElement.style.fontSize = "";
+  document.body.style.fontSize = a.font_scale ? (14 * a.font_scale / 100) + "px" : "";
+  document.body.classList.toggle("compact", !!a.compact);
+  document.body.classList.toggle("theme-light", a.theme === "light");
+  let tag = document.getElementById("user-css");
+  if (!tag) { tag = document.createElement("style"); tag.id = "user-css"; document.head.appendChild(tag); }
+  tag.textContent = a.custom_css || "";
+}
+
+/* ===== Console page: typed commands + talking as the bot ===== */
+function viewConsole() {
+  const guildOpts = S.guilds.map((g) => `<option value="${esc(g.id)}" ${g.id === (S.chatGuild || S.guildId) ? "selected" : ""}>${esc(g.name)}</option>`).join("");
+  return `
+    <div class="console-grid">
+      <div class="card section">
+        <div class="row"><h3>${esc(t("קונסול"))}</h3><div class="spacer"></div>
+          <span class="muted small">${esc(t("הקלד help כדי לראות את כל הפקודות"))}</span>
+          <button class="btn btn-sm btn-ghost" data-action="console-clear">${esc(t("נקה"))}</button></div>
+        <div id="logs" class="logs console-logs" style="margin-top:10px"></div>
+        <div class="console-input ltr"><span class="prompt">›</span>
+          <input id="console-input" autocomplete="off" spellcheck="false" placeholder="help · status · say #general hi · module GOLA levels on"></div>
+      </div>
+      <div class="card section">
+        <div class="row"><h3>${esc(t("דבר בשם הבוט"))}</h3></div>
+        <div class="row" style="margin:10px 0;flex-wrap:wrap">
+          <select id="chat-guild" class="no-translate" style="width:auto;min-width:160px">${guildOpts}</select>
+          <select id="chat-channel" class="no-translate" style="width:auto;min-width:180px"><option value="">${esc(t("בחר ערוץ"))}</option></select>
+          <button class="btn btn-sm" data-action="chat-reload">${esc(t("רענן"))}</button>
+        </div>
+        <div id="chat-box" class="chat-box"><div class="muted small">${esc(t("בחר שרת וערוץ. הבוט צריך להיות מחובר."))}</div></div>
+        <div class="row" style="margin-top:10px;align-items:flex-end">
+          <textarea id="chat-input" rows="2" class="grow" placeholder="${esc(t("כתוב הודעה בשם הבוט… (Enter שולח, Shift+Enter שורה חדשה)"))}"></textarea>
+          <button class="btn btn-primary" data-action="chat-send">${esc(t("שלח"))}</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+let consoleHistory = [], consoleIdx = -1, chatTimer = null;
+function consoleOut(lines, cls = "log-console") {
+  const box = $("#logs");
+  if (!box) return;
+  if (box.firstElementChild && box.firstElementChild.classList.contains("muted")) box.innerHTML = "";
+  box.insertAdjacentHTML("beforeend", lines.map((l) => `<div class="log-line ${cls}"><span class="msg">${esc(l)}</span></div>`).join(""));
+  box.scrollTop = box.scrollHeight;
+}
+
+async function runConsole(line) {
+  if (!line.trim()) return;
+  consoleHistory.unshift(line); consoleIdx = -1;
+  consoleOut(["› " + line], "log-cmd");
+  if (line.trim().toLowerCase() === "clear") { $("#logs").innerHTML = ""; return; }
+  try { consoleOut((await api("POST", "/console", { line })).lines); }
+  catch (e) { consoleOut([errMessage(e)], "log-ERROR"); }
+}
+
+async function afterConsoleRender() {
+  renderLogs();
+  const gid = S.chatGuild || S.guildId;
+  if (gid) await loadChatChannels(gid);
+  clearInterval(chatTimer);
+  chatTimer = setInterval(() => { if (S.page === "console" && S.chatChannel) loadChatMessages(true); else if (S.page !== "console") clearInterval(chatTimer); }, 5000);
+}
+
+async function loadChatChannels(gid) {
+  S.chatGuild = gid;
+  const sel = $("#chat-channel");
+  if (!sel) return;
+  let g;
+  try { g = await api("GET", "/guilds/" + gid); } catch (e) { toast(errMessage(e), "error"); return; }
+  const chans = (g.objects && g.objects.text_channels) || [];
+  if (!chans.find((c) => c.id === S.chatChannel)) S.chatChannel = "";
+  sel.innerHTML = `<option value="">${esc(t("בחר ערוץ"))}</option>` + chans.map((c) =>
+    `<option value="${esc(c.id)}" ${c.id === S.chatChannel ? "selected" : ""}># ${esc(c.name)}${c.category ? " · " + esc(c.category) : ""}</option>`).join("");
+  if (!g.objects) $("#chat-box").innerHTML = `<div class="muted small">${esc(t("הבוט כבוי או לא בשרת הזה."))}</div>`;
+  if (S.chatChannel) loadChatMessages();
+}
+
+async function loadChatMessages(quiet) {
+  const box = $("#chat-box");
+  if (!box || !S.chatGuild || !S.chatChannel) return;
+  let msgs;
+  try { msgs = await api("GET", `/guilds/${S.chatGuild}/channels/${S.chatChannel}/messages?limit=40`); }
+  catch (e) { if (!quiet) box.innerHTML = `<div class="muted small">${esc(errMessage(e))}</div>`; return; }
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+  box.innerHTML = msgs.map((m) => `
+    <div class="chat-msg no-translate">
+      <img class="chat-avatar" src="${esc(m.avatar)}" alt="">
+      <div class="grow"><div><b>${esc(m.author)}</b>${m.bot ? ` <span class="badge">BOT</span>` : ""} <span class="muted small">${new Date(m.time * 1000).toLocaleString()}</span></div>
+        <div class="chat-text">${esc(m.content) || (m.embeds ? `<span class="muted">[embed]</span>` : "")}</div>
+        ${m.attachments.map((a) => `<a href="${esc(a)}" target="_blank" rel="noopener" class="small">📎 ${esc(a.split("/").pop().split("?")[0])}</a>`).join(" ")}</div>
+    </div>`).join("") || `<div class="muted small">${esc(t("אין הודעות בערוץ הזה."))}</div>`;
+  if (atBottom || !quiet) box.scrollTop = box.scrollHeight;
+}
+
+async function sendChat() {
+  const input = $("#chat-input");
+  const text = input.value.trim();
+  if (!text) return;
+  if (!S.chatChannel) { toast("בחר ערוץ", "error"); return; }
+  try {
+    await api("POST", `/guilds/${S.chatGuild}/channels/${S.chatChannel}/messages`, { content: text });
+    input.value = "";
+    loadChatMessages();
+  } catch (e) { toast(errMessage(e), "error"); }
+}
+
+/* ===== Customize page ===== */
+const CUST_TABS = [["texts", "טקסטים של הבוט"], ["colors", "צבעים ואימוג'ים"], ["commands", "פקודות סלאש"], ["look", "מראה האפליקציה"]];
+const PALETTE_LABELS = { info: "מידע", success: "הצלחה", warning: "אזהרה", danger: "סכנה / מחיקה", brand: "צבע ראשי (כרטיסים, חנות, מובילים)",
+  starboard: "Starboard", birthdays: "ימי הולדת", done: "הצעה שבוצעה" };
+const EMOJI_LABELS = { vote_up: "הצבעה בעד (הצעות)", vote_down: "הצבעה נגד (הצעות)", giveaway: "הגרלות", ticket: "כרטיסים", close: "סגירה" };
+
+function viewCustomize() {
+  const tab = S.custTab || "texts";
+  const tabs = `<div class="tabs">${CUST_TABS.map(([k, l]) => `<button class="tab ${k === tab ? "active" : ""}" data-action="cust-tab" data-tab="${k}">${esc(t(l))}</button>`).join("")}</div>`;
+  let body = `<div class="empty">${esc(t("טוען…"))}</div>`;
+  if (tab === "look") body = viewLook();
+  else if (tab === "commands") body = S.cmds ? viewCommandsTab() : body;
+  else if (!S.guild) body = noGuild();
+  else if (S.cust && S.cust.gid === S.guildId) body = tab === "texts" ? viewTextsTab() : viewColorsTab();
+  return tabs + body;
+}
+
+async function afterCustomizeRender() {
+  const tab = S.custTab || "texts";
+  if ((tab === "texts" || tab === "colors") && S.guild && (!S.cust || S.cust.gid !== S.guildId)) {
+    try { S.cust = { ...(await api("GET", `/guilds/${S.guildId}/custom`)), gid: S.guildId }; } catch (e) { toast(errMessage(e), "error"); return; }
+    render();
+  }
+  if (tab === "commands" && !S.cmds) {
+    try { S.cmds = await api("GET", "/commands"); } catch (e) { toast(errMessage(e), "error"); return; }
+    render();
+  }
+}
+
+function viewTextsTab() {
+  const c = S.cust, q = (S.custQuery || "").toLowerCase(), grp = S.custGroup || "";
+  const groups = [...new Set(c.catalog.map((r) => r.group))];
+  const rows = c.catalog.filter((r) => (!grp || r.group === grp) && (!q || (r.default + " " + (c.texts[r.key] || "")).toLowerCase().includes(q)));
+  const changed = Object.keys(c.texts).length;
+  return `
+    <div class="notice">${esc(t("כל הודעה שהבוט שולח בדיסקורד בשרת הזה. כתוב נוסח משלך, או השאר ריק כדי להשתמש בברירת המחדל. משתנים כמו {user} חייבים להישאר עם אותו שם."))}</div>
+    <div class="card section">
+      <div class="row" style="flex-wrap:wrap">
+        <input id="cust-search" type="search" value="${esc(S.custQuery || "")}" placeholder="${esc(t("חיפוש בטקסטים…"))}" style="max-width:280px">
+        <select id="cust-group" style="width:auto"><option value="">${esc(t("כל המודולים"))} (${c.catalog.length})</option>
+          ${groups.map((g) => `<option value="${esc(g)}" ${g === grp ? "selected" : ""}>${esc(g)}</option>`).join("")}</select>
+        <span class="muted small">${esc(t("{n} טקסטים שונו", { n: changed }))}</span>
+        <div class="spacer"></div>
+        <button class="btn btn-primary" data-action="cust-save">${esc(t("שמור"))}</button>
+      </div>
+      <div class="ct-list">${rows.slice(0, 400).map((r) => `
+        <div class="ct-row ${c.texts[r.key] ? "changed" : ""}">
+          <div class="ct-head"><span class="badge">${esc(r.group)}</span>${r.placeholders.length ? `<span class="muted small ltr">${r.placeholders.map((p) => "{" + esc(p) + "}").join(" ")}</span>` : ""}</div>
+          <div class="ct-default no-translate">${esc(r.default)}</div>
+          <div class="row"><textarea rows="1" class="grow no-translate" data-ct="${esc(r.key)}" placeholder="${esc(t("ברירת מחדל"))}">${esc(c.texts[r.key] || "")}</textarea>
+            <button class="btn btn-sm btn-ghost" data-action="ct-reset" title="${esc(t("איפוס"))}">↺</button></div>
+        </div>`).join("") || `<div class="muted small">${esc(t("לא נמצאו טקסטים"))}</div>`}</div>
+    </div>`;
+}
+
+function viewColorsTab() {
+  const c = S.cust;
+  const colorRow = (k) => {
+    const val = c.colors[k] || c.palette[k];
+    return `<div class="row cc-row"><span class="swatch" style="background:${esc(val)}"></span><span class="grow">${esc(t(PALETTE_LABELS[k] || k))}</span>
+      <input type="color" data-cc="${k}" value="${esc(val.toLowerCase())}"><span class="muted small ltr">${esc(val)}</span>
+      <button class="btn btn-sm btn-ghost" data-action="cc-reset" data-key="${k}" title="${esc(t("איפוס"))}">↺</button></div>`;
+  };
+  const emojiRow = (k) => `<div class="row cc-row"><span class="grow">${esc(t(EMOJI_LABELS[k] || k))}</span>
+      <input type="text" data-ce="${k}" value="${esc(c.emojis[k] || "")}" placeholder="${esc(c.emoji_defaults[k])}" maxlength="64" style="max-width:140px"></div>`;
+  return `
+    <div class="notice">${esc(t("הצבעים של כל ה-Embeds שהבוט שולח בשרת הזה, ואימוג'ים של כפתורים והצבעות. את האימוג'ים שבתוך ההודעות משנים בלשונית 'טקסטים של הבוט'."))}</div>
+    <div class="grid" style="grid-template-columns:1fr 1fr">
+      <div class="card section"><h3>${esc(t("צבעים"))}</h3>${Object.keys(c.palette).map(colorRow).join("")}</div>
+      <div class="card section"><h3>${esc(t("אימוג'ים"))}</h3>${Object.keys(c.emoji_defaults).map(emojiRow).join("")}</div>
+    </div>
+    <div class="row" style="margin-top:12px"><div class="spacer"></div><button class="btn btn-primary" data-action="cust-save">${esc(t("שמור"))}</button></div>`;
+}
+
+function viewCommandsTab() {
+  const { commands, custom } = S.cmds;
+  return `
+    <div class="notice">${esc(t("שינוי שם, תיאור או כיבוי של פקודות סלאש. דיסקורד מציג את אותן פקודות בכל השרתים, אז זה חל על כל השרתים. אחרי השמירה הבוט מתחבר מחדש."))}</div>
+    <div class="card section">
+      <table class="table"><thead><tr><th>${esc(t("פקודה"))}</th><th>${esc(t("שם חדש"))}</th><th>${esc(t("תיאור"))}</th><th>${esc(t("פעילה"))}</th></tr></thead><tbody>
+      ${commands.map((c) => { const o = custom[c.name] || {}; return `<tr data-cmd="${esc(c.name)}">
+        <td class="ltr"><b>/${esc(c.name)}</b>${c.subcommands.length ? `<div class="muted small">${c.subcommands.map(esc).join(", ")}</div>` : ""}</td>
+        <td><input type="text" class="ltr cmd-new" value="${esc(o.name || "")}" placeholder="${esc(c.name)}" maxlength="32"></td>
+        <td><input type="text" class="cmd-desc" value="${esc(o.description || "")}" placeholder="${esc(t(c.description))}" maxlength="100"></td>
+        <td><label class="switch"><input type="checkbox" class="cmd-on" ${o.enabled === false ? "" : "checked"}><span class="slider"></span></label></td></tr>`; }).join("")}
+      </tbody></table>
+      <div class="row" style="margin-top:12px"><div class="spacer"></div><button class="btn btn-primary" data-action="cmds-save">${esc(t("שמור והחל"))}</button></div>
+    </div>`;
+}
+
+function lookDraft() {
+  if (!S.lookDraft) S.lookDraft = { theme: "dark", accent: "#6D5DFC", background: "", surface: "", text: "", font_scale: 100, radius: 12, compact: false, custom_css: "", ...((S.settings && S.settings.settings.appearance) || {}) };
+  return S.lookDraft;
+}
+
+function viewLook() {
+  const a = lookDraft();
+  const color = (k, label) => `<div class="field"><span class="label">${esc(t(label))}</span>
+    <div class="row"><input type="color" data-look="${k}" value="${esc((a[k] || (k === "accent" ? "#6d5dfc" : "#000000")).toLowerCase())}">
+    <button class="btn btn-sm btn-ghost" data-action="look-reset" data-key="${k}">${esc(t("ברירת מחדל"))}</button>
+    <span class="muted small ltr">${esc(a[k] || t("ברירת מחדל"))}</span></div></div>`;
+  return `
+    <div class="notice">${esc(t("המראה של האפליקציה הזו (לא של הבוט בדיסקורד). השינויים מוצגים מיד, ונשמרים כשלוחצים שמור."))}</div>
+    <div class="card section"><div class="form-grid">
+      <div class="field"><span class="label">${esc(t("ערכת נושא"))}</span><select data-look="theme" style="width:auto">
+        <option value="dark" ${a.theme === "dark" ? "selected" : ""}>${esc(t("כהה"))}</option><option value="light" ${a.theme === "light" ? "selected" : ""}>${esc(t("בהירה"))}</option></select></div>
+      ${color("accent", "צבע ראשי")}
+      ${color("background", "צבע רקע")}
+      ${color("surface", "צבע כרטיסים")}
+      ${color("text", "צבע טקסט")}
+      <div class="field"><span class="label">${esc(t("גודל טקסט"))}: <span class="ltr">${a.font_scale}%</span></span><input type="range" min="80" max="140" step="5" data-look="font_scale" value="${a.font_scale}"></div>
+      <div class="field"><span class="label">${esc(t("עיגול פינות"))}: <span class="ltr">${a.radius}px</span></span><input type="range" min="0" max="24" data-look="radius" value="${a.radius}"></div>
+      <div class="row field-bool"><label class="switch"><input type="checkbox" data-look="compact" ${a.compact ? "checked" : ""}><span class="slider"></span></label><span>${esc(t("תצוגה צפופה"))}</span></div>
+      <div class="field wide"><span class="label">${esc(t("CSS מותאם (למתקדמים)"))}</span>
+        <textarea data-look="custom_css" rows="6" class="ltr no-translate" placeholder=".sidebar { background: #101820; }">${esc(a.custom_css || "")}</textarea>
+        <span class="hint">${esc(t("שולטים בכל פרט בעיצוב. אי אפשר לטעון קבצים מבחוץ."))}</span></div>
+    </div>
+    <div class="row" style="margin-top:12px"><button class="btn btn-ghost" data-action="look-defaults">${esc(t("חזרה לברירת המחדל"))}</button><div class="spacer"></div>
+      <button class="btn btn-primary" data-action="look-save">${esc(t("שמור"))}</button></div></div>`;
+}
+
+Object.assign(actions, {
+  "console-clear"() { const b = $("#logs"); if (b) b.innerHTML = ""; },
+  "chat-reload"() { loadChatMessages(); },
+  "chat-send"() { sendChat(); },
+  "cust-tab"(btn) { S.custTab = btn.dataset.tab; render(); afterCustomizeRender(); },
+  "ct-reset"(btn) { const ta = btn.parentElement.querySelector("textarea"); ta.value = ""; delete S.cust.texts[ta.dataset.ct]; ta.closest(".ct-row").classList.remove("changed"); },
+  "cc-reset"(btn) { delete S.cust.colors[btn.dataset.key]; render(); },
+  async "cust-save"(btn) {
+    document.querySelectorAll("[data-ce]").forEach((el) => { if (el.value.trim()) S.cust.emojis[el.dataset.ce] = el.value.trim(); else delete S.cust.emojis[el.dataset.ce]; });
+    await guarded(btn, async () => {
+      const saved = await api("PUT", `/guilds/${S.guildId}/custom`, { config: { texts: S.cust.texts, colors: S.cust.colors, emojis: S.cust.emojis } });
+      Object.assign(S.cust, saved);
+      render();
+      toast("נשמר. הבוט משתמש בזה מעכשיו.", "ok");
+    });
+  },
+  async "cmds-save"(btn) {
+    const custom = {};
+    document.querySelectorAll("[data-cmd]").forEach((row) => {
+      const o = { name: row.querySelector(".cmd-new").value.trim(), description: row.querySelector(".cmd-desc").value.trim(), enabled: row.querySelector(".cmd-on").checked };
+      if (o.name || o.description || !o.enabled) custom[row.dataset.cmd] = o;
+    });
+    await guarded(btn, async () => {
+      const res = await api("PUT", "/commands", { config: custom });
+      S.cmds.custom = res.custom;
+      render();
+      toast(res.restarted ? "נשמר. הבוט מתחבר מחדש עם הפקודות החדשות." : "נשמר. השינוי יחול כשהבוט יופעל.", "ok");
+    });
+  },
+  "look-reset"(btn) { lookDraft()[btn.dataset.key] = btn.dataset.key === "accent" ? "#6D5DFC" : ""; applyAppearance(lookDraft()); render(); },
+  "look-defaults"() { S.lookDraft = null; S.lookDraft = { ...lookDraft(), theme: "dark", accent: "#6D5DFC", background: "", surface: "", text: "", font_scale: 100, radius: 12, compact: false, custom_css: "" }; applyAppearance(S.lookDraft); render(); },
+  async "look-save"(btn) {
+    await guarded(btn, async () => {
+      S.settings = await api("PUT", "/settings", { appearance: lookDraft() });
+      S.lookDraft = null;
+      applyAppearance(S.settings.settings.appearance);
+      toast("נשמר", "ok");
+    });
+  },
+});
+
+document.addEventListener("input", (e) => {
+  const el = e.target;
+  if (el.dataset && el.dataset.ct !== undefined && S.cust) {
+    if (el.value.trim()) S.cust.texts[el.dataset.ct] = el.value; else delete S.cust.texts[el.dataset.ct];
+    el.closest(".ct-row").classList.toggle("changed", !!el.value.trim());
+  }
+  if (el.dataset && el.dataset.cc && S.cust) {
+    S.cust.colors[el.dataset.cc] = el.value.toUpperCase();
+    const sw = el.parentElement.querySelector(".swatch"); if (sw) sw.style.background = el.value;
+  }
+  if (el.dataset && el.dataset.look) {
+    const a = lookDraft(), k = el.dataset.look;
+    a[k] = el.type === "checkbox" ? el.checked : el.type === "range" ? +el.value : el.type === "color" ? el.value.toUpperCase() : el.value;
+    applyAppearance(a);
+    if (el.type === "range") { const lbl = el.parentElement.querySelector(".label .ltr"); if (lbl) lbl.textContent = a[k] + (k === "radius" ? "px" : "%"); }
+  }
+  if (el.id === "cust-search") { S.custQuery = el.value; const pos = el.selectionStart; render(); const s = $("#cust-search"); s.focus(); s.setSelectionRange(pos, pos); }
+});
+document.addEventListener("change", (e) => {
+  const el = e.target;
+  if (el.id === "cust-group") { S.custGroup = el.value; render(); }
+  if (el.dataset && el.dataset.look === "theme") { lookDraft().theme = el.value; applyAppearance(lookDraft()); }
+  if (el.id === "chat-guild") { S.chatChannel = ""; loadChatChannels(el.value); }
+  if (el.id === "chat-channel") { S.chatChannel = el.value; loadChatMessages(); }
+});
+document.addEventListener("keydown", (e) => {
+  if (e.target.id === "console-input") {
+    if (e.key === "Enter") { const v = e.target.value; e.target.value = ""; runConsole(v); }
+    else if (e.key === "ArrowUp" && consoleHistory.length) { consoleIdx = Math.min(consoleIdx + 1, consoleHistory.length - 1); e.target.value = consoleHistory[consoleIdx]; e.preventDefault(); }
+    else if (e.key === "ArrowDown") { consoleIdx = Math.max(consoleIdx - 1, -1); e.target.value = consoleIdx >= 0 ? consoleHistory[consoleIdx] : ""; e.preventDefault(); }
+  }
+  if (e.target.id === "chat-input" && e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
+});
+
 /* ===== events ===== */
 document.addEventListener("click", (e) => {
   const sr = e.target.closest("[data-search-page]");
@@ -1601,7 +1927,9 @@ document.addEventListener("change", async (e) => {
     if (S.dirty && !(await confirmDialog("יש שינויים שלא נשמרו", "להחליף שרת בלי לשמור?", "החלף"))) { renderGuildSelect(); return; }
     setDirty(false);
     S.guildId = t.value;
+    S.cust = null;
     await loadGuild();
+    if (S.page === "customize") render(), afterCustomizeRender();
     return;
   }
   if (t.id === "log-filter") { S.logFilter = t.value; renderLogs(); return; }
@@ -1686,6 +2014,7 @@ async function boot() {
   try {
     [S.settings, S.catalog] = await Promise.all([api("GET", "/settings"), api("GET", "/catalog")]);
   } catch (e) { toast(errMessage(e), "error"); }
+  applyAppearance(S.settings && S.settings.settings.appearance);
   renderNav();
   connectWS();
   await refreshGuilds();

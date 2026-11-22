@@ -8,7 +8,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from ..bot import USER_PINGS
-from .common import reply_off, text_channel
+from .common import reply_off, text_channel, themed
 
 log = logging.getLogger("botd.invites")
 
@@ -103,5 +103,5 @@ class InviteTracker(commands.Cog):
         if not rows:
             return await interaction.response.send_message(tr("עוד אין הזמנות במעקב.", cfg["_lang"]), ephemeral=True)
         lines = [f"**{i}.** <@{r['user_id']}> · {r['total']}" for i, r in enumerate(rows, 1)]
-        embed = discord.Embed(title=tr("🏆 המזמינים המובילים", cfg["_lang"]), description="\n".join(lines), color=0x6D5DFC)
+        embed = discord.Embed(title=tr("🏆 המזמינים המובילים", cfg["_lang"]), description="\n".join(lines), color=themed(cfg["_lang"], 0x6D5DFC))
         await interaction.response.send_message(embed=embed, allowed_mentions=discord.AllowedMentions.none())

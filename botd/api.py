@@ -37,6 +37,7 @@ class SettingsIn(BaseModel):
     allowed_channel_id: str | None = None
     keep_running_on_close: bool | None = None
     autostart_bot: bool | None = None
+    appearance: dict | None = None
 
 
 class ProfileIn(BaseModel):
@@ -108,6 +109,8 @@ def create_app(
     request_shutdown: Callable[[], None],
 ) -> FastAPI:
     allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+    from . import build_id
+    BUILD = build_id()  # the code this service was started with
     token_bytes = session_token.encode()
 
     def token_ok(value: str | None) -> bool:
@@ -150,7 +153,7 @@ def create_app(
     # ---- service ---------------------------------------------------------
     @app.get("/api/ping")
     async def ping():
-        return {"ok": True, "version": __version__}
+        return {"ok": True, "version": __version__, "build": BUILD}
 
     @app.post("/api/shutdown")
     async def shutdown():
@@ -248,6 +251,20 @@ def create_app(
                 raise err(401, tr("המפתח לא תקין"))
             except anthropic.APIError as exc:
                 raise err(502, tr("Anthropic החזיר שגיאה: {error}", error=type(exc).__name__))
+            return {"ok": True, "message": tr("המפתח תקין")}
+        if name in ("openai_key", "xai_key"):
+            from .modules import ai_providers
+
+            provider = "openai" if name == "openai_key" else "grok"
+            key = secrets_store.get(name)
+            if not key:
+                raise err(400, tr("לא הוגדר מפתח"))
+            try:
+                ok = await ai_providers.test_key(provider, key)
+            except Exception as exc:  # noqa: BLE001
+                raise err(502, tr("{name} החזיר שגיאה: {error}", name=ai_providers.PROVIDERS[provider]["name"], error=type(exc).__name__))
+            if not ok:
+                raise err(401, tr("המפתח לא תקין"))
             return {"ok": True, "message": tr("המפתח תקין")}
         if name in ("twitch_client_id", "twitch_client_secret"):
             import httpx
@@ -480,6 +497,99 @@ def create_app(
             raise err(404, tr("המשתמש לא נמצא"))
         log.info(tr("הארנק של משתמש %s אופס מהאפליקציה בשרת %s"), uid, guild["name"])
         return {"ok": True}
+
+    # ---- customization: bot texts, colors, emojis (per server) and slash commands (all servers) ----
+    @app.get("/api/guilds/{gid}/custom")
+    async def get_custom(gid: str):
+        from . import customize
+        from .modules.common import EMOJIS, PALETTE
+
+        _guild_or_404(gid)
+        return {**store.guild_custom(gid), "catalog": customize.text_catalog(store.guild_lang(gid)),
+                "palette": {k: f"#{v:06X}" for k, v in PALETTE.items()}, "emoji_defaults": EMOJIS}
+
+    @app.put("/api/guilds/{gid}/custom")
+    async def put_custom(gid: str, body: ConfigIn):
+        from . import customize
+
+        guild = _guild_or_404(gid)
+        try:
+            clean = customize.validate_custom(body.config)
+        except ValueError as exc:
+            raise err(400, str(exc))
+        store.set_config(gid, "_custom", clean)
+        log.info(tr("ההתאמות האישיות נשמרו בשרת %s (%d טקסטים)"), guild["name"], len(clean["texts"]))
+        return clean
+
+    @app.get("/api/commands")
+    async def get_commands():
+        from .bot import command_specs
+
+        specs = await command_specs(store)
+        return {"commands": specs, "custom": store.get_kv("command_custom", {}) or {}}
+
+    @app.put("/api/commands")
+    async def put_commands(body: ConfigIn):
+        from . import customize
+        from .bot import command_specs
+
+        known = {c["name"] for c in await command_specs(store)}
+        try:
+            clean = customize.validate_commands(body.config, known)
+        except ValueError as exc:
+            raise err(400, str(exc))
+        store.set_kv("command_custom", clean)
+        restarted = False
+        if manager.task is not None and not manager.task.done():
+            await manager.stop()
+            await manager.start()
+            restarted = True
+        log.info(tr("הגדרות פקודות הסלאש נשמרו (%d שינויים)"), len(clean))
+        return {"custom": clean, "restarted": restarted}
+
+    # ---- console: typed commands and talking as the bot -------------------------------
+    class ConsoleIn(BaseModel):
+        line: str
+
+    class SendIn(BaseModel):
+        content: str
+
+    @app.post("/api/console")
+    async def console(body: ConsoleIn):
+        from .console import run_command
+
+        return {"lines": await run_command(manager, store, body.line)}
+
+    @app.get("/api/guilds/{gid}/channels/{cid}/messages")
+    async def channel_messages(gid: str, cid: str, limit: int = 40):
+        guild = _live(gid)
+        channel = guild.get_channel(int(cid)) if cid.isdigit() else None
+        if channel is None or not hasattr(channel, "history"):
+            raise err(404, tr("לא נמצא הערוץ"))
+        try:
+            msgs = [m async for m in channel.history(limit=max(1, min(limit, 100)))]
+        except discord.Forbidden:
+            raise err(403, tr("לבוט אין הרשאה לקרוא את הערוץ הזה"))
+        return [{"id": str(m.id), "author": m.author.display_name, "author_id": str(m.author.id), "bot": m.author.bot,
+                 "avatar": m.author.display_avatar.with_size(64).url, "content": m.content,
+                 "embeds": len(m.embeds), "attachments": [a.url for a in m.attachments][:4],
+                 "time": m.created_at.timestamp()} for m in reversed(msgs)]
+
+    @app.post("/api/guilds/{gid}/channels/{cid}/messages")
+    async def channel_send(gid: str, cid: str, body: SendIn):
+        guild = _live(gid)
+        channel = guild.get_channel(int(cid)) if cid.isdigit() else None
+        text = body.content.strip()
+        if channel is None or not hasattr(channel, "send"):
+            raise err(404, tr("לא נמצא הערוץ"))
+        if not text or len(text) > 2000:
+            raise err(400, tr("ההודעה ריקה או ארוכה מ-2000 תווים"))
+        try:
+            msg = await channel.send(text, allowed_mentions=discord.AllowedMentions(everyone=False, roles=False, users=True))
+        except discord.HTTPException as exc:
+            raise err(400, tr("דיסקורד דחה את ההודעה: {error}", error=exc.text or exc.status))
+        log.info(tr("נשלחה הודעה מהקונסול ל-#%s בשרת %s"), channel.name, guild.name)
+        return {"id": str(msg.id)}
 
     # ---- newer modules: actions and data views -------------------------------------
     def _live(gid: str) -> discord.Guild:

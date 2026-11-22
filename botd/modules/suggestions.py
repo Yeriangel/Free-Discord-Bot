@@ -7,7 +7,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from .common import has_any_role, reply_off, text_channel
+from .common import emoji, has_any_role, reply_off, text_channel, themed
 
 log = logging.getLogger("botd.suggestions")
 
@@ -23,7 +23,7 @@ STATUS = {  # key: (label, color)
 def suggestion_embed(number: int, text: str, author: discord.abc.User | None, status: str, note: str,
                      lang: str) -> discord.Embed:
     label, color = STATUS.get(status, STATUS["open"])
-    embed = discord.Embed(title=tr("💡 הצעה #{n}", lang, n=number), description=text[:4000], color=color)
+    embed = discord.Embed(title=tr("💡 הצעה #{n}", lang, n=number), description=text[:4000], color=themed(lang, color))
     if author is not None:
         embed.set_author(name=author.display_name, icon_url=author.display_avatar.url)
     embed.add_field(name=tr("סטטוס", lang), value=tr(label, lang), inline=True)
@@ -46,9 +46,9 @@ class Suggestions(commands.Cog):
         embed = suggestion_embed(number, text, None if cfg["anonymous"] else member, "open", "", lang)
         msg = await channel.send(embed=embed)
         self.bot.store.set_suggestion_message(sid, str(msg.id))
-        for emoji in ("👍", "👎"):
+        for em in (emoji(lang, "vote_up"), emoji(lang, "vote_down")):
             try:
-                await msg.add_reaction(emoji)
+                await msg.add_reaction(em)
             except discord.HTTPException:
                 break
         if cfg["create_thread"]:

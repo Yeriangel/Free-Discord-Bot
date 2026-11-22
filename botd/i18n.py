@@ -21,9 +21,9 @@ _ui_lang = "he"
 def table() -> dict[str, tuple[str, str, str]]:
     global _table
     if _table is None:
-        from .locale_data import bot, catalog, features, server, ui
+        from .locale_data import bot, catalog, custom_ui, features, server, ui
         merged: dict = {}
-        for part in (features.S, catalog.S, server.S, bot.S, ui.S):  # older tables win on shared keys
+        for part in (custom_ui.S, features.S, catalog.S, server.S, bot.S, ui.S):  # older tables win on shared keys
             merged.update(part)
         _table = merged
     return _table
@@ -42,10 +42,31 @@ def ui_lang() -> str:
     return _ui_lang
 
 
+class Lang(str):
+    """A language code ("en") that also carries one server's custom texts and colors.
+
+    Everything that builds bot messages already passes the server's language to tr(), so a server's own wording
+    reaches every message without changing the modules.
+    """
+
+    def __new__(cls, code: str, texts: dict | None = None, colors: dict | None = None, emojis: dict | None = None):
+        obj = super().__new__(cls, code if code in LANGS else "he")
+        obj.texts, obj.colors, obj.emojis = texts or {}, colors or {}, emojis or {}
+        return obj
+
+
 def tr(text: str, lang: str | None = None, **kw) -> str:
     lang = lang or _ui_lang
     out = text
-    if lang != "he" and text:
+    custom = getattr(lang, "texts", None)
+    if custom and custom.get(text):
+        out = custom[text]
+        if kw:
+            try:
+                return out.format(**kw)
+            except (KeyError, IndexError, ValueError):
+                out = text  # a broken custom text falls back to the normal one
+    elif lang != "he" and text:
         row = table().get(text)
         if row:
             out = row[_INDEX[lang]] or text

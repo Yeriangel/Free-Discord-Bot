@@ -11,7 +11,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from ..bot import USER_PINGS
-from .common import can_manage_role, reply_off, text_channel
+from .common import can_manage_role, reply_off, text_channel, themed
 
 log = logging.getLogger("botd.birthdays")
 
@@ -173,5 +173,5 @@ class Birthdays(commands.Cog):
         rows.sort(key=lambda r: ((r["month"], r["day"]) < (today.month, today.day), r["month"], r["day"]))
         lines = [f"🎂 `{r['day']:02d}/{r['month']:02d}` · " + (f"<@{r['user_id']}>" if r["user_id"] else
                                                               discord.utils.escape_markdown(r["user_name"])) for r in rows[:20]]
-        embed = discord.Embed(title=tr("ימי ההולדת הקרובים", cfg["_lang"]), description="\n".join(lines), color=0xF47FFF)
+        embed = discord.Embed(title=tr("ימי ההולדת הקרובים", cfg["_lang"]), description="\n".join(lines), color=themed(cfg["_lang"], 0xF47FFF))
         await interaction.response.send_message(embed=embed, allowed_mentions=discord.AllowedMentions.none())

@@ -13,7 +13,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from .. import secrets_store
-from . import claude_actions
+from . import ai_providers, claude_actions
 
 log = logging.getLogger("botd.claude")
 
@@ -21,7 +21,8 @@ MODELS = {"haiku": "claude-haiku-5-5", "sonnet": "claude-sonnet-5-5", "opus": "c
 MODEL = MODELS["haiku"]
 MAX_TOKENS = 4000
 # list prices per million tokens (input, output) - for the cost estimate in the app only
-PRICES = {"claude-haiku-5-5": (0.10, 0.50), "claude-sonnet-5-5": (2.0, 10.0), "claude-opus-5-5": (4.0, 20.0)}
+PRICES = {"claude-haiku-5-5": (0.10, 0.50), "claude-sonnet-5-5": (2.0, 10.0), "claude-opus-5-5": (4.0, 20.0),
+          **ai_providers.PRICES}
 # Sonnet/Opus 5.5 can decline some requests for safety reasons; the API can then retry on another model
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 DISCORD_LIMIT = 1900
@@ -181,9 +182,19 @@ class ClaudeChat(commands.Cog):
                                 mention_author=False)
             return
 
-        client = self._anthropic()
-        if client is None:
-            await message.reply(tr("עוד לא הוגדר Anthropic API Key באפליקציה.", cfg.get("_lang", "he")), mention_author=False)
+        provider = cfg.get("provider") or "claude"
+        if provider not in ai_providers.PROVIDERS:
+            provider = "claude"
+        name = ai_providers.PROVIDERS[provider]["name"]
+        lang = cfg.get("_lang", "he")
+        if provider == "claude":
+            client, key = self._anthropic(), None
+            missing = client is None
+        else:
+            client, key = None, secrets_store.get(ai_providers.PROVIDERS[provider]["secret"])
+            missing = not key
+        if missing:
+            await message.reply(tr("עוד לא הוגדר מפתח API של {name} באפליקציה.", lang, name=name), mention_author=False)
             return
 
         async with self._locks[channel_id]:
@@ -193,7 +204,10 @@ class ClaudeChat(commands.Cog):
             messages.append({"role": "user", "content": text[:8000]})
             try:
                 async with message.channel.typing():
-                    model = MODELS.get(cfg.get("model", "haiku"), MODEL)
+                    if provider == "claude":
+                        model = str(cfg.get("custom_model") or "").strip() or MODELS.get(cfg.get("model", "haiku"), MODEL)
+                    else:
+                        model = ai_providers.model_for(provider, cfg)
                     system = (cfg["system_prompt"] or "You are a helpful assistant.") + LANGUAGE_RULE
                     in_guild = message.guild is not None and isinstance(message.author, discord.Member)
                     tools = claude_actions.available_tools(self.bot, message.guild, bool(cfg.get("allow_actions"))) if in_guild else []
@@ -204,10 +218,13 @@ class ClaudeChat(commands.Cog):
                     if tools:
                         request["tools"] = tools
                     for _round in range(MAX_TOOL_ROUNDS):
-                        if model == MODEL:
-                            response = await client.messages.create(**request)
-                        else:
+                        if provider != "claude":
+                            response = await ai_providers.chat(provider, key, model, request["system"], request["messages"],
+                                                               request.get("tools", []), MAX_TOKENS)
+                        elif model in (MODELS["sonnet"], MODELS["opus"]):
                             response = await client.beta.messages.create(**request, betas=[FALLBACK_BETA], fallbacks="default")
+                        else:
+                            response = await client.messages.create(**request)
                         calls = [b for b in response.content if b.type == "tool_use"]
                         if not calls or any(c.name not in claude_actions.READ_NAMES for c in calls):
                             break
@@ -235,13 +252,24 @@ class ClaudeChat(commands.Cog):
             except anthropic.APIConnectionError:
                 await message.reply(tr("אין חיבור ל-Anthropic. בדוק את האינטרנט.", cfg.get("_lang", "he")), mention_author=False)
                 return
+            except ai_providers.ProviderError as exc:
+                log.error(tr("%s החזיר שגיאה: %s"), name, exc)
+                text_by_kind = {
+                    "auth": tr("מפתח ה-API של {name} לא תקין. עדכן אותו באפליקציה.", lang, name=name),
+                    "permission": tr("למפתח של {name} אין הרשאה למודל הזה.", lang, name=name),
+                    "rate": tr("יש עומס כרגע. נסה שוב בעוד דקה.", lang),
+                    "connection": tr("אין חיבור ל-{name}. בדוק את האינטרנט.", lang, name=name),
+                }
+                await message.reply(text_by_kind.get(exc.kind, tr("{name} לא זמין כרגע. נסה שוב מאוחר יותר.", lang, name=name)),
+                                    mention_author=False)
+                return
 
             tool_calls = [b for b in response.content if b.type == "tool_use" and b.name not in claude_actions.READ_NAMES]
             if response.stop_reason == "refusal":
-                reply = tr("Claude לא יכול לענות על זה.", cfg.get("_lang", "he"))
+                reply = tr("{name} לא יכול לענות על זה.", lang, name=name)
             elif tool_calls:
                 said = "\n".join(b.text for b in response.content if b.type == "text").strip()
-                reply = await self._run_actions(message, tool_calls, said, cfg.get("_lang", "he"))
+                reply = await self._run_actions(message, tool_calls, said, lang, name)
                 if max_turns:
                     hist.append({"role": "user", "content": text[:8000]})
                     hist.append({"role": "assistant", "content": (reply or said or "[actions]")[:4000]})
@@ -260,7 +288,7 @@ class ClaudeChat(commands.Cog):
         totals = self._record_usage(response.usage, getattr(response, "model", None) or MODEL)
         if reply is None:  # actions already answered in their own message
             return
-        log.info(tr("Claude ענה (%d טוקנים נכנסים, %d יוצאים). היום: %d תשובות"),
+        log.info(tr("%s ענה (%d טוקנים נכנסים, %d יוצאים). היום: %d תשובות"), name,
                  response.usage.input_tokens, response.usage.output_tokens, totals["messages"])
         chunks = split_message(reply)
         none = discord.AllowedMentions.none()
@@ -271,7 +299,7 @@ class ClaudeChat(commands.Cog):
         except discord.HTTPException as exc:
             log.warning(tr("שליחת תשובת Claude נכשלה: %s"), exc.text or exc.status)
 
-    async def _run_actions(self, message: discord.Message, calls, said: str, lang: str) -> str | None:
+    async def _run_actions(self, message: discord.Message, calls, said: str, lang: str, name: str = "Claude") -> str | None:
         """Show Claude's planned server actions, wait for the allowed user to confirm, then run them."""
         from .moderation import ConfirmView
 
@@ -279,7 +307,7 @@ class ClaudeChat(commands.Cog):
                  for c in calls[:10]]
         ok_plans = [p for p in plans if not p.error]
         lines = [("• " + p.line) if not p.error else f"• ⚠️ {p.line}: {p.error}" for p in plans]
-        head = (said + "\n\n" if said else "") + tr("**Claude רוצה לבצע:**", lang) + "\n" + "\n".join(lines)
+        head = (said + "\n\n" if said else "") + tr("**{name} רוצה לבצע:**", lang, name=name) + "\n" + "\n".join(lines)
         if not ok_plans:
             return head + "\n" + tr("אין פעולה שאפשר לבצע.", lang)
         view = ConfirmView(message.author.id, lang)

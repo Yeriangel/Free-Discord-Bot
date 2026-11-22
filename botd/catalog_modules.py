@@ -274,20 +274,35 @@ MODULES = [
 
     # ================= AI =================
     {
-        "key": "claude_chat", "category": "ai", "label": "צ'אט עם Claude",
-        "description": "Claude עונה למשתמש המורשה בלבד: בהודעה פרטית, כשמתייגים את הבוט או כשעונים לו",
+        "key": "claude_chat", "category": "ai", "label": "צ'אט AI (Claude / ChatGPT / Grok)",
+        "description": "הבינה המלאכותית עונה למשתמש המורשה בלבד: בהודעה פרטית, כשמתייגים את הבוט או כשעונים לו",
         "permissions": ["read_message_history"], "intents": [], "status": "ready", "commands": ["/claude_reset"],
         "fields": [
             _f("system_prompt", "textarea", "הנחיות ל-Claude (System prompt)",
                "אתה עוזר ידידותי בשרת דיסקורד. ענה בשפה שבה פנו אליך, בקצרה ובבהירות. "
                "השתמש ב-Markdown של דיסקורד כשזה עוזר.",
                hint="איך Claude מתנהג: אופי, שפה, אורך תשובות"),
-            _f("model", "select", "מודל", "haiku", options=[
+            _f("provider", "select", "ספק הבינה המלאכותית", "claude", options=[
+                ["claude", "Claude (Anthropic)"], ["openai", "ChatGPT (OpenAI)"], ["grok", "Grok (xAI)"]],
+               hint="המפתח של כל ספק נשמר בעמוד 'חיבור והגדרות'. לכל הספקים יש את אותן יכולות: כלים, אישורים ומגבלות."),
+            _f("model", "select", "מודל Claude", "haiku", options=[
                 ["haiku", "Haiku: הכי מהיר וזול (מומלץ לצ'אט)"],
                 ["sonnet", "Sonnet: חכם יותר, בערך פי 20 מהמחיר של Haiku"],
                 ["opus", "Opus: הכי חכם, בערך פי 40 מהמחיר של Haiku"],
             ], hint="מודל חזק יותר עונה טוב יותר, אבל כל הודעה עולה יותר טוקנים. מחיר למיליון טוקנים (נכנסים / יוצאים): Haiku ‏$0.10 / $0.50 · Sonnet ‏$2 / $10 · Opus ‏$4 / $20"),
-            _f("effort", "select", "רמת מאמץ", "low", options=[
+            _f("openai_model", "select", "מודל ChatGPT", "luna", options=[
+                ["luna", "GPT-6 Luna: הכי זול ומהיר (מומלץ לצ'אט)"],
+                ["terra", "GPT-6.1 Terra: בערך פי 10 מ-Luna"],
+                ["sol", "GPT-6.2 Sol: חכם יותר, בערך פי 20 מ-Luna"],
+                ["astra", "GPT-6.2 Astra: הכי חכם, בערך פי 80 מ-Luna"],
+            ], hint="מחיר למיליון טוקנים (נכנסים / יוצאים): Luna ‏$0.10 / $0.50 · Terra ‏$1 / $5 · Sol ‏$2 / $10 · Astra ‏$8 / $40"),
+            _f("grok_model", "select", "מודל Grok", "grok-4.3", options=[
+                ["grok-4.3", "Grok 4.3: זול יותר (מומלץ לצ'אט)"],
+                ["grok-4.7", "Grok 4.7: הדגל של xAI, חכם יותר"],
+            ], hint="מחיר למיליון טוקנים (נכנסים / יוצאים): Grok 4.3 ‏$1.25 / $2.50 · Grok 4.7 ‏$2 / $6"),
+            _f("custom_model", "text", "מזהה מודל מותאם (לא חובה)", "", max=80,
+               hint="למתקדמים: מזהה מודל אחר של הספק שנבחר, למשל כשיוצא מודל חדש. ריק = לפי הבחירה למעלה."),
+            _f("effort", "select", "רמת מאמץ (Claude)", "low", options=[
                 ["low", "נמוכה: מהיר וזול (מומלץ לצ'אט)"], ["medium", "בינונית"], ["high", "גבוהה: יסודי יותר"]]),
             _f("history_messages", "number", "כמה הודעות קודמות לזכור", 10, min=0, max=30,
                hint="לכל ערוץ בנפרד. הזיכרון נמחק כשהבוט נכבה, או עם ‎/claude_reset. ‏0 = בלי זיכרון."),

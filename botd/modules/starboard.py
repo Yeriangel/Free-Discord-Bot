@@ -9,7 +9,7 @@ from collections import defaultdict
 import discord
 from discord.ext import commands
 
-from .common import text_channel
+from .common import text_channel, themed
 from .reaction_roles import emoji_key
 
 log = logging.getLogger("botd.starboard")
@@ -29,7 +29,7 @@ class Activity(commands.Cog):
 
 
 def star_embed(message: discord.Message, count: int, emoji: str, lang: str) -> discord.Embed:
-    embed = discord.Embed(description=(message.content or "")[:4000] or None, color=0xF5C542, timestamp=message.created_at)
+    embed = discord.Embed(description=(message.content or "")[:4000] or None, color=themed(lang, 0xF5C542), timestamp=message.created_at)
     embed.set_author(name=message.author.display_name, icon_url=message.author.display_avatar.url)
     image = next((a.url for a in message.attachments if (a.content_type or "").startswith("image/")), None)
     if image:

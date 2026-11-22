@@ -47,14 +47,14 @@ class ManagedBot(commands.Bot):
         gid = str(guild.id)
         if not self.store.module_enabled(gid, key):
             return None
-        lang = self.store.guild_lang(gid)
+        lang = self.store.guild_lang_obj(gid)
         config = catalog.merged_config(key, self.store.raw_config(gid, key), lang)
         config["_lang"] = lang
         return config
 
     def lang(self, guild: discord.abc.Snowflake | None) -> str:
         """The bot's language in this server (Hebrew by default)."""
-        return self.store.guild_lang(str(guild.id)) if guild is not None else "he"
+        return self.store.guild_lang_obj(str(guild.id)) if guild is not None else "he"
 
     def t(self, guild, text: str, **kw) -> str:
         """Translate a bot message into the server's language."""
@@ -78,7 +78,23 @@ class ManagedBot(commands.Bot):
 
         for cog_cls in COGS:
             await self.add_cog(cog_cls(self))
+        self.apply_command_custom()
         await self._sync_commands()
+
+    def apply_command_custom(self) -> None:
+        """Renames, re-describes or removes slash commands as set on the app's Commands page (all servers)."""
+        custom = self.store.get_kv("command_custom", {}) or {}
+        for cmd in list(self.tree.get_commands()):
+            cmd.extras.setdefault("src_name", cmd.name)
+            opts = custom.get(cmd.extras["src_name"]) or {}
+            if opts.get("description"):
+                cmd.extras["custom_description"] = opts["description"]
+            if opts.get("enabled") is False:
+                self.tree.remove_command(cmd.name)
+            elif opts.get("name") and opts["name"] != cmd.name:
+                self.tree.remove_command(cmd.name)
+                cmd.name = opts["name"]
+                self.tree.add_command(cmd)
 
     def _localize_commands(self) -> None:
         """Slash command descriptions follow the app's UI language (Discord has no Hebrew/Arabic client locale)."""
@@ -94,7 +110,7 @@ class ManagedBot(commands.Bot):
 
         for cmd in walk(self.tree.get_commands()):
             src = cmd.extras.setdefault("src_description", _plain(cmd.description))
-            cmd.description = tr(src, lang)[:100]
+            cmd.description = (cmd.extras.get("custom_description") or tr(src, lang))[:100]
             for param in getattr(cmd, "_params", {}).values():
                 if not hasattr(param, "_src_description"):
                     param._src_description = _plain(param.description)
@@ -145,6 +161,27 @@ class ManagedBot(commands.Bot):
 
     async def on_guild_update(self, _before: discord.Guild, _after: discord.Guild) -> None:
         self.manager._sync_guilds(self)
+
+
+_COMMAND_SPECS: list[dict] | None = None
+
+
+async def command_specs(store: Store) -> list[dict]:
+    """Every top-level slash command the bot has (name, Hebrew source description, subcommands),
+    worked out once by loading the modules into a bot that never connects."""
+    global _COMMAND_SPECS
+    if _COMMAND_SPECS is None:
+        from .modules import COGS
+
+        bot = ManagedBot(BotManager(store), {"members": False, "message_content": False})
+        for cog_cls in COGS:
+            await bot.add_cog(cog_cls(bot))
+        _COMMAND_SPECS = [{"name": c.name, "description": _plain(c.description),
+                           "subcommands": [s.name for s in getattr(c, "commands", [])]}
+                          for c in bot.tree.get_commands()]
+        for name in list(bot.cogs):
+            await bot.remove_cog(name)
+    return _COMMAND_SPECS
 
 
 class BotManager:
