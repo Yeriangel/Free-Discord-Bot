@@ -93,7 +93,8 @@ def main() -> int:
 
     app = create_app(manager, store, token, port, request_shutdown)
     config = uvicorn.Config(
-        app, host="127.0.0.1", port=port, access_log=False, log_config=None, lifespan="on"
+        app, host="127.0.0.1", port=port, access_log=False, log_config=None, lifespan="on",
+        timeout_graceful_shutdown=5,  # an old app window's live connection must not keep the service alive
     )
     server = uvicorn.Server(config)
 

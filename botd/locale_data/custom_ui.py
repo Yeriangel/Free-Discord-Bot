@@ -315,6 +315,8 @@ S = {
     # ---- embed builder, channel picker, custom commands v2, restart, background ----
     'באותה שורה': ('Same line', 'В одной строке', 'في نفس السطر'),
     'הודעה פרטית': ('Direct message', 'Личное сообщение', 'رسالة خاصة'),
+    'שירות חדש יותר פועל, השירות הישן נסגר': ('A newer service is running, closing the old one', 'Запущен более новый сервис, старый закрывается',
+                                             'تعمل خدمة أحدث، يتم إغلاق القديمة'),
     # ---- bot character (persona) ----
     'אחר': ('Other', 'Другое', 'أخرى'),
     'אנימה ומנגה': ('Anime & manga', 'Аниме и манга', 'أنمي ومانغا'),

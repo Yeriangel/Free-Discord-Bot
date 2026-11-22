@@ -122,12 +122,14 @@ def create_app(
     async def lifespan(_app: FastAPI):
         bus.attach(asyncio.get_running_loop())
         log.info(tr("שירות הבוט עלה (גרסה %s)"), __version__)
+        watcher = asyncio.create_task(watch_for_replacement())
         if store.get_settings()["autostart_bot"] and secrets_store.get("bot_token"):
             try:
                 await manager.start()
             except ValueError as exc:
                 log.warning("%s", exc)
         yield
+        watcher.cancel()
         await manager.stop()
         log.info(tr("שירות הבוט נסגר"))
 
@@ -173,11 +175,40 @@ def create_app(
         log.info(tr("האפליקציה נפתחת מחדש…"))
         return {"ok": True}
 
+    async def _shutdown_now(reason: str) -> None:
+        """Disconnect every bot first (so a slow exit can never leave a bot answering), then stop the service.
+        If the process is somehow still alive 15 seconds later, it ends for sure."""
+        import os
+
+        log.info(reason)
+        loop = asyncio.get_running_loop()
+        loop.call_later(15, os._exit, 0)
+        try:
+            await asyncio.wait_for(manager.stop(), timeout=10)
+        except Exception:  # noqa: BLE001
+            log.exception("stopping the bots failed")
+        loop.call_later(0.3, request_shutdown)
+
     @app.post("/api/shutdown")
     async def shutdown():
-        log.info(tr("התקבלה בקשת כיבוי לשירות"))
-        asyncio.get_running_loop().call_later(0.3, request_shutdown)
+        asyncio.create_task(_shutdown_now(tr("התקבלה בקשת כיבוי לשירות")))
         return {"ok": True}
+
+    async def watch_for_replacement() -> None:
+        """A newer service took over (its details are in session.json): stop this one, so two copies of the same
+        bot never answer in Discord at the same time."""
+        import os
+
+        from .__main__ import read_session, session_alive
+
+        await asyncio.sleep(10)
+        while True:
+            await asyncio.sleep(5)
+            current = await asyncio.to_thread(read_session)
+            if current and current.get("pid") not in (None, os.getpid()) and current.get("token") != session_token \
+                    and await asyncio.to_thread(session_alive, current):
+                await _shutdown_now(tr("שירות חדש יותר פועל, השירות הישן נסגר"))
+                return
 
     # ---- bot lifecycle ---------------------------------------------------
     @app.get("/api/status")

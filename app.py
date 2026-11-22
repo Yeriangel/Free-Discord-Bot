@@ -45,10 +45,17 @@ def running_build(session: dict | None) -> str | None:
 
 
 def stop_old_service(session: dict, timeout: float = 15.0) -> None:
+    """Asks the old service to stop and waits; if it is still running after that, ends its process."""
     _call(session, "POST", "/shutdown")
     deadline = time.time() + timeout
     while time.time() < deadline and session_alive(session):
         time.sleep(0.3)
+    if session_alive(session) and session.get("pid"):
+        try:
+            os.kill(int(session["pid"]), 9)  # on Windows this ends the process (TerminateProcess)
+        except OSError:
+            pass
+        time.sleep(1)
 
 
 def ensure_service(timeout: float = 20.0, force_restart: bool = False) -> dict:
