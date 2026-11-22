@@ -294,8 +294,11 @@ class ClaudeChat(commands.Cog):
                             break
                         # read-only lookups: answer them and let Claude continue
                         self._record_usage(response.usage, getattr(response, "model", None) or model, count=False)
+                        if any(c.name in claude_actions.MEMBER_TOOLS for c in calls):
+                            await claude_actions.load_members(message.guild)
                         results = [{"type": "tool_result", "tool_use_id": c.id,
-                                    "content": claude_actions.run_read_tool(self.bot, message.guild, c.name, dict(c.input))}
+                                    "content": claude_actions.run_read_tool(self.bot, message.guild, c.name, dict(c.input),
+                                                                            message.channel, message.author)}
                                    for c in calls]
                         request["messages"] = request["messages"] + [{"role": "assistant", "content": response.content},
                                                                      {"role": "user", "content": results}]

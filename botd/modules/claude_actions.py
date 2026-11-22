@@ -5,6 +5,7 @@ checks the user's own Discord permissions and role hierarchy, and only then runs
 """
 
 import logging
+import asyncio
 import re
 from datetime import timedelta
 
@@ -87,7 +88,21 @@ READ_TOOLS = [
     {"name": "list_birthdays", "description": "The birthdays saved in this server.", "input_schema": _obj({}, [])},
     {"name": "server_info", "description": "Basic numbers about this server: members, channels, roles, boosts, creation date.",
      "input_schema": _obj({}, [])},
+    {"name": "list_members", "description": "The people in this channel (everyone who can see it) or in the whole server, "
+                                            "with their mention and whether they are a bot. Use it whenever you need to "
+                                            "know who is here; the chat history does not show everyone.",
+     "input_schema": _obj({"scope": {"type": "string", "enum": ["channel", "server"]},
+                           "include_bots": {"type": "boolean"}}, ["scope", "include_bots"])},
+    {"name": "pick_random_member", "description": "Picks members truly at random (the bot draws them, fairly). Always use "
+                                                  "this when asked to choose someone at random, never pick by yourself.",
+     "input_schema": _obj({"scope": {"type": "string", "enum": ["channel", "server"]},
+                           "count": {"type": "integer", "description": "1 to 10"},
+                           "include_bots": {"type": "boolean"},
+                           "exclude_asker": {"type": "boolean", "description": "true to leave out the person who asked"}},
+                          ["scope", "count", "include_bots", "exclude_asker"])},
 ]
+MEMBER_TOOLS = {"list_members", "pick_random_member"}
+MAX_LISTED = 150
 READ_NAMES = {t["name"] for t in READ_TOOLS}
 DATA_MODULES = {t["name"]: t["module"] for t in DATA_TOOLS}
 
@@ -108,11 +123,60 @@ def available_tools(bot, guild, allow_actions: bool) -> list[dict]:
     return api_tools(tools)
 
 
-def run_read_tool(bot, guild: discord.Guild, name: str, args: dict) -> str:
+async def load_members(guild: discord.Guild) -> None:
+    """Makes sure the bot knows every member (Discord sends big member lists only on request)."""
+    if not guild.chunked and guild._state._intents.members:
+        try:
+            await asyncio.wait_for(guild.chunk(cache=True), timeout=20)
+        except Exception:  # noqa: BLE001 - answer with what is known
+            pass
+
+
+def _members_in(guild: discord.Guild, channel, scope: str, include_bots: bool) -> list:
+    members = list(guild.members)
+    if scope == "channel" and channel is not None and hasattr(channel, "permissions_for"):
+        members = [m for m in members if channel.permissions_for(m).view_channel]
+    if not include_bots:
+        members = [m for m in members if not m.bot]
+    return sorted(members, key=lambda m: m.display_name.lower())
+
+
+def _member_line(m) -> str:
+    extra = " (bot)" if m.bot else ""
+    name = m.display_name if m.display_name == m.name else f"{m.display_name} ({m.name})"
+    return f"{name} <@{m.id}>{extra}"
+
+
+def _members_note(guild: discord.Guild) -> str:
+    if not guild._state._intents.members:
+        return ("\nNote: the Server Members intent is off, so the bot only knows members it has seen talk. "
+                "Turn it on in the app (Bot page) to see everyone.")
+    return ""
+
+
+def run_read_tool(bot, guild: discord.Guild, name: str, args: dict, channel=None, asker=None) -> str:
     """Executes a read-only tool and returns plain text for Claude."""
     import datetime as dt
+    import random
 
     gid = str(guild.id)
+    if name in MEMBER_TOOLS:
+        scope = args.get("scope") if args.get("scope") in ("channel", "server") else "channel"
+        members = _members_in(guild, channel, scope, bool(args.get("include_bots")))
+        where = f"#{getattr(channel, 'name', '?')}" if scope == "channel" else "the server"
+        if name == "list_members":
+            shown = members[:MAX_LISTED]
+            more = f"\n...and {len(members) - len(shown)} more" if len(members) > len(shown) else ""
+            return (f"{len(members)} members in {where}:\n" + "\n".join(_member_line(m) for m in shown) + more +
+                    _members_note(guild))
+        if args.get("exclude_asker") and asker is not None:
+            members = [m for m in members if m.id != asker.id]
+        if not members:
+            return f"Nobody to pick from in {where}." + _members_note(guild)
+        count = max(1, min(int(args.get("count") or 1), 10, len(members)))
+        picked = random.SystemRandom().sample(members, count)
+        return (f"Randomly picked from {len(members)} members in {where}: " + ", ".join(_member_line(m) for m in picked) +
+                ". Mention them exactly as written." + _members_note(guild))
     if name == "top_members":
         limit = max(1, min(int(args.get("limit") or 10), 25))
         rows = bot.store.top_talkers(gid, limit)
@@ -159,7 +223,9 @@ def server_context(guild: discord.Guild, tool_names: list[str] | None = None) ->
                  "'John's birthday is on 24/12', call that tool so the user can choose to save it, and say in one short "
                  "sentence that you can add it. Never invent dates or details the user did not give.\n")
     if any(n in READ_NAMES for n in tool_names):
-        text += "Use the read tools (top_members, list_birthdays, server_info) to answer questions about the server.\n"
+        text += ("Use the read tools (" + ", ".join(sorted(READ_NAMES)) + ") to answer questions about the server. "
+                 "You do not see the member list unless you call list_members; to choose someone at random call "
+                 "pick_random_member.\n")
     return (text + f"Server: {guild.name}\nChannels (id #name (type)):\n" + "\n".join(chans) +
             "\nRoles (id @name):\n" + "\n".join(roles))
 

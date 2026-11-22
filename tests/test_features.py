@@ -333,6 +333,49 @@ def test_module_listeners():
     print("ok listeners: birthdays, reminders, AFK, giveaway draw, suggestions, temporary channels")
 
 
+def test_ai_member_tools():
+    """The AI can list who is in the channel and draw random members fairly (not only the people who talked)."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from botd.modules import claude_actions
+
+    def member(i, name, bot=False, sees=True):
+        return SimpleNamespace(id=i, name=name, display_name=name, bot=bot, sees=sees)
+
+    people = [member(1, "Yeri"), member(2, "Dan"), member(3, "Helper", bot=True), member(4, "Hidden", sees=False),
+              member(5, "C-Bot", bot=True)]
+    guild = MagicMock()
+    guild.members = people
+    guild._state._intents.members = True
+    channel = SimpleNamespace(name="general", permissions_for=lambda m: SimpleNamespace(view_channel=m.sees))
+    names = {t["name"] for t in claude_actions.available_tools(MagicMock(cfg=lambda g, k: None), guild, False)}
+    assert {"list_members", "pick_random_member"} <= names
+    text = claude_actions.run_read_tool(None, guild, "list_members", {"scope": "channel", "include_bots": True}, channel)
+    assert text.startswith("4 members in #general") and "Dan <@2>" in text and "Helper <@3> (bot)" in text
+    assert "Hidden" not in text
+    text = claude_actions.run_read_tool(None, guild, "list_members", {"scope": "server", "include_bots": False}, channel)
+    assert text.startswith("3 members in the server") and "Helper" not in text
+    seen = set()
+    for _ in range(60):
+        text = claude_actions.run_read_tool(None, guild, "pick_random_member",
+                                            {"scope": "channel", "count": 1, "include_bots": False, "exclude_asker": True},
+                                            channel, people[0])
+        assert "from 1 members" in text and "<@2>" in text
+        text = claude_actions.run_read_tool(None, guild, "pick_random_member",
+                                            {"scope": "channel", "count": 1, "include_bots": True, "exclude_asker": False},
+                                            channel, people[0])
+        seen |= {i for i in (1, 2, 3, 5) if f"<@{i}>" in text}
+    assert seen == {1, 2, 3, 5}  # everyone in the channel can be drawn
+    text = claude_actions.run_read_tool(None, guild, "pick_random_member",
+                                        {"scope": "channel", "count": 9, "include_bots": True, "exclude_asker": False},
+                                        channel, people[0])
+    assert "from 4 members" in text and text.count("<@") == 4
+    guild._state._intents.members = False
+    assert "intent is off" in claude_actions.run_read_tool(None, guild, "list_members",
+                                                           {"scope": "channel", "include_bots": True}, channel)
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
