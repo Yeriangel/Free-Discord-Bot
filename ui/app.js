@@ -186,14 +186,15 @@ function translateTextNode(node) {
 function translateTree(root) {
   if (I18N.lang === "he" || !root) return;
   if (root.nodeType === 3) { translateTextNode(root); return; }
-  if (root.nodeType !== 1 || root.closest(SKIP_SEL)) return;
+  if (root.nodeType !== 1 || root.closest(".no-translate, script, style, .logs")) return;  // text inside textareas is skipped per node
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const nodes = [];
   while (walker.nextNode()) nodes.push(walker.currentNode);
   nodes.forEach(translateTextNode);
   const els = [root, ...root.querySelectorAll("[placeholder], [title]")];
   for (const el of els) {
-    if (!el.getAttribute || el.closest(SKIP_SEL)) continue;
+    // text inside a textarea is the user's own; its placeholder and tooltip are app text and do get translated
+    if (!el.getAttribute || el.closest(".no-translate, script, style, .logs")) continue;
     for (const attr of ["placeholder", "title"]) {
       const v = el.getAttribute(attr);
       if (v && HEB_RE.test(v)) { const nv = trText(v); if (nv !== v) el.setAttribute(attr, nv); }
@@ -334,10 +335,16 @@ function renderNav() {
 }
 
 const SINGLE_MODULE_CATS = { automations: "automations" };
-async function go(page) {
+const NAV_HISTORY = { back: [], forward: [] };
+async function go(page, fromHistory = false) {
   if (page.startsWith("cat:") && SINGLE_MODULE_CATS[page.slice(4)]) page = "mod:" + SINGLE_MODULE_CATS[page.slice(4)];
   if (S.dirty && page !== S.page) {
     if (!(await confirmDialog("יש שינויים שלא נשמרו", "לצאת מהדף בלי לשמור? השינויים יאבדו.", "צא בלי לשמור"))) return;
+  }
+  if (!fromHistory && page !== S.page) {
+    NAV_HISTORY.back.push(S.page);
+    if (NAV_HISTORY.back.length > 100) NAV_HISTORY.back.shift();
+    NAV_HISTORY.forward = [];
   }
   setDirty(false);
   S.page = page;
@@ -548,12 +555,34 @@ function presenceDraft() {
   return S.presenceDraft;
 }
 
-function viewProfilePreview() {
+function profileScope() {
+  return S.guild && S.profileScope !== "default" ? "server" : "default";
+}
+
+function profileView() {
+  /* what the page and the preview show: the server's own profile, or the default one */
   const p = S.profile || {};
+  const sp = S.serverProfile && S.serverProfile.gid === S.guildId ? S.serverProfile : null;
+  if (profileScope() === "server") {
+    const nickEl = $("#sp-nick");
+    return {
+      server: true, ready: !!(sp && sp.account), loading: !sp,
+      name: (nickEl ? nickEl.value : sp && sp.nick) || p.username || "Bot",
+      avatar: S.spAvatar || (sp && sp.avatar_url) || p.avatar_url || NONE_IMG,
+      banner: S.spBanner || (sp && sp.banner_url) || p.banner_url || "",
+      ownAvatar: !!(sp && sp.avatar_url), ownBanner: !!(sp && sp.banner_url),
+    };
+  }
+  const userEl = $("#bot-username");
+  return { server: false, ready: !!p.username, name: (userEl && userEl.value) || p.username || "Bot",
+           avatar: S.avatarDraft || p.avatar_url || NONE_IMG, banner: S.bannerDraft || p.banner_url || "" };
+}
+
+function viewProfilePreview() {
+  const v = profileView();
   const pr = presenceDraft();
-  const name = esc(($("#bot-username") && $("#bot-username").value) || p.username || "Bot");
-  const avatar = esc(S.avatarDraft || p.avatar_url || NONE_IMG);
-  const banner = S.bannerDraft || p.banner_url;
+  const name = esc(v.name);
+  const avatar = esc(v.avatar);
   const act = pr.activity !== "none" && pr.text
     ? `<div class="pv-activity"><div class="muted small">${esc(t(ACTIVITY_LABELS[pr.activity]))}</div><b class="no-translate">${esc(pr.text)}</b></div>` : "";
   return `
@@ -566,7 +595,7 @@ function viewProfilePreview() {
     </div>
     <div class="field"><span class="label">${esc(t("תצוגת פרופיל"))}</span>
       <div class="pv-profile">
-        <div class="pv-banner" style="${banner ? `background-image:url('${esc(banner)}')` : ""}"></div>
+        <div class="pv-banner" style="${v.banner ? `background-image:url('${esc(v.banner)}')` : ""}"></div>
         <div class="pv-avatar-wrap big"><img src="${avatar}" alt=""><span class="pv-dot ${pr.status}"></span></div>
         <div class="pv-body"><div class="row" style="gap:6px"><b class="no-translate" style="font-size:17px">${name}</b><span class="pv-app">APP</span></div>
           ${act}</div>
@@ -576,81 +605,67 @@ function viewProfilePreview() {
 
 function viewProfile() {
   const p = S.profile;
+  const v = profileView();
+  const sp = S.serverProfile && S.serverProfile.gid === S.guildId ? S.serverProfile : null;
   const pr = presenceDraft();
-  const statusOpts = Object.entries(STATUS_LABELS).map(([k, v]) => `<option value="${k}" ${k === pr.status ? "selected" : ""}>${esc(t(v))}</option>`).join("");
-  const actOpts = Object.entries(ACTIVITY_LABELS).map(([k, v]) => `<option value="${k}" ${k === pr.activity ? "selected" : ""}>${esc(t(v))}</option>`).join("");
-  return `
+  const statusOpts = Object.entries(STATUS_LABELS).map(([k, val]) => `<option value="${k}" ${k === pr.status ? "selected" : ""}>${esc(t(val))}</option>`).join("");
+  const actOpts = Object.entries(ACTIVITY_LABELS).map(([k, val]) => `<option value="${k}" ${k === pr.activity ? "selected" : ""}>${esc(t(val))}</option>`).join("");
+  const server = v.server;
+  const scopeBar = S.guild ? `
+    <div class="tabs" style="margin-bottom:14px">
+      <button class="tab ${server ? "active" : ""}" data-action="profile-scope" data-scope="server">${esc(t("השרת הזה"))}: <span class="no-translate">${esc(S.guild.name)}</span></button>
+      <button class="tab ${server ? "" : "active"}" data-action="profile-scope" data-scope="default">${esc(t("פרופיל ברירת מחדל (כל השרתים)"))}</button>
+    </div>
+    <p class="desc" style="margin:-4px 0 14px">${esc(server
+      ? t("התמונה, הבאנר, השם והביו כאן נראים רק בשרת הזה. מחליפים שרת למעלה כדי לערוך שרת אחר.")
+      : t("הפרופיל שכל השרתים רואים, חוץ משרתים שקבעת להם פרופיל משלהם."))}</p>` : "";
+  if (server && v.loading) return scopeBar + `<div class="card section empty">${esc(t("טוען…"))}</div>`;
+  if (server && !v.ready) return scopeBar + `<div class="notice warn">${esc(t("הבוט צריך להיות מחובר ובשרת הזה כדי לערוך את הפרופיל שלו כאן."))}</div>`;
+  const ids = server ? { avatar: "sp-avatar-file", banner: "sp-banner-file" } : { avatar: "avatar-file", banner: "banner-file" };
+  const avatarUndo = server ? (S.spAvatar ? `<button class="btn btn-sm btn-ghost" data-action="sp-discard" data-field="avatar">${esc(t("בטל תמונה"))}</button>`
+      : v.ownAvatar ? `<button class="btn btn-sm btn-ghost" data-action="sp-reset" data-field="avatar">${esc(t("חזרה לתמונה הרגילה"))}</button>` : "")
+    : (S.avatarDraft ? `<button class="btn btn-sm btn-ghost" data-action="discard-avatar">בטל תמונה</button>` : "");
+  const bannerUndo = server ? (S.spBanner ? `<button class="btn btn-sm btn-ghost" data-action="sp-discard" data-field="banner">${esc(t("בטל באנר"))}</button>`
+      : v.ownBanner ? `<button class="btn btn-sm btn-ghost" data-action="sp-reset" data-field="banner">${esc(t("חזרה לבאנר הרגיל"))}</button>` : "")
+    : (S.bannerDraft ? `<button class="btn btn-sm btn-ghost" data-action="discard-banner">בטל באנר</button>` : "");
+  const nameField = server
+    ? `<div class="field"><span class="label">${esc(t("שם הבוט בשרת הזה (כינוי)"))}</span>
+         <input type="text" id="sp-nick" maxlength="32" value="${esc(sp.nick)}" placeholder="${esc((p && p.username) || sp.default_name)}">
+         <span class="hint">${esc(t("ריק = השם הרגיל של הבוט"))}</span></div>`
+    : `<div class="field"><span class="label">שם הבוט</span>
+         <input type="text" id="bot-username" maxlength="32" value="${esc(p ? p.username : "")}" ${p ? "" : "disabled"}>
+         <span class="hint">2–32 תווים. דיסקורד מאפשר לשנות שם רק כמה פעמים בשעה.</span></div>`;
+  return scopeBar + `
     <div class="card section personalizer">
       <div class="pz-col">
         <div class="field"><span class="label">אייקון</span>
-          <label class="pz-icon file-btn"><img id="avatar-preview" alt="" src="${esc(S.avatarDraft || (p && p.avatar_url) || NONE_IMG)}">
-            <input type="file" id="avatar-file" accept="image/png,image/jpeg,image/gif,image/webp"><span class="pz-edit">✎</span></label>
-          ${S.avatarDraft ? `<button class="btn btn-sm btn-ghost" data-action="discard-avatar">בטל תמונה</button>` : ""}
+          <label class="pz-icon file-btn"><img id="avatar-preview" alt="" src="${esc(v.avatar)}">
+            <input type="file" id="${ids.avatar}" accept="image/png,image/jpeg,image/gif,image/webp"><span class="pz-edit">✎</span></label>
+          ${avatarUndo}
         </div>
         <div class="field"><span class="label">באנר (רקע)</span>
-          <label class="pz-banner file-btn" style="${S.bannerDraft || (p && p.banner_url) ? `background-image:url('${esc(S.bannerDraft || p.banner_url)}')` : ""}">
-            <input type="file" id="banner-file" accept="image/png,image/jpeg,image/gif,image/webp"><span class="pz-edit">✎</span></label>
-          ${S.bannerDraft ? `<button class="btn btn-sm btn-ghost" data-action="discard-banner">בטל באנר</button>` : ""}
+          <label class="pz-banner file-btn" style="${v.banner ? `background-image:url('${esc(v.banner)}')` : ""}">
+            <input type="file" id="${ids.banner}" accept="image/png,image/jpeg,image/gif,image/webp"><span class="pz-edit">✎</span></label>
+          ${bannerUndo}
           <span class="hint">מומלץ 680×240. PNG, JPG, GIF או WEBP, עד 8MB</span>
         </div>
       </div>
       <div class="pz-col grow">
-        <div class="field"><span class="label">שם הבוט</span>
-          <input type="text" id="bot-username" maxlength="32" value="${esc(p ? p.username : "")}" ${p ? "" : "disabled"}>
-          <span class="hint">2–32 תווים. דיסקורד מאפשר לשנות שם רק כמה פעמים בשעה.</span></div>
-        <div class="field"><span class="label">סטטוס הבוט</span><select id="pr-status">${statusOpts}</select></div>
+        ${nameField}
+        ${server ? `<div class="field"><span class="label">${esc(t("ביו בשרת הזה"))}</span><textarea id="sp-bio" maxlength="190" rows="2">${esc(sp.bio)}</textarea></div>` : ""}
+        <div class="field"><span class="label">סטטוס הבוט</span><select id="pr-status">${statusOpts}</select>
+          ${server ? `<span class="hint">${esc(t("הסטטוס והפעילות משותפים לכל השרתים (מגבלה של דיסקורד)."))}</span>` : ""}</div>
         <div class="row" style="align-items:flex-start">
           <div class="field grow"><span class="label">סוג פעילות</span><select id="pr-activity">${actOpts}</select></div>
           <div class="field grow"><span class="label">טקסט הסטטוס</span><input type="text" id="pr-text" maxlength="128" value="${esc(pr.text)}" ${pr.activity === "none" ? "disabled" : ""}></div>
         </div>
         ${pr.activity === "streaming" ? `<div class="field"><span class="label">קישור לשידור (Twitch או YouTube)</span><input type="text" class="ltr" id="pr-url" value="${esc(pr.url)}" placeholder="https://twitch.tv/..."></div>` : ""}
         <span class="hint">הסטטוס והפעילות מתעדכנים מיד כשהבוט מחובר. דיסקורד מגביל החלפת תמונה ובאנר לפעמיים בערך בשעה.</span>
-        <div class="row" style="margin-top:12px"><button class="btn btn-primary" data-action="save-profile" ${p ? "" : "disabled"}>שמור שינויים</button></div>
+        <div class="row" style="margin-top:12px"><button class="btn btn-primary" data-action="${server ? "sp-save" : "save-profile"}" ${p || server ? "" : "disabled"}>${esc(server ? t("שמור לשרת הזה") : t("שמור שינויים"))}</button></div>
       </div>
       <div class="pz-col pz-preview" id="pz-preview">${viewProfilePreview()}</div>
     </div>
-    <div id="profile-msg"></div>
-    ${viewServerProfile()}`;
-}
-
-function viewServerProfile() {
-  if (!S.guild) return "";
-  const sp = S.serverProfile && S.serverProfile.gid === S.guildId ? S.serverProfile : null;
-  const img = (draft, url, fallback) => esc(draft || url || fallback || NONE_IMG);
-  return `
-    <div class="card section">
-      <div class="row"><h3>${esc(t("הפרופיל של הבוט בשרת הזה"))}: <span class="no-translate">${esc(S.guild.name)}</span></h3></div>
-      <p class="desc" style="margin:6px 0 12px">${esc(t("כינוי, תמונה, באנר וביו שרואים רק בשרת הזה. שאר השרתים ממשיכים להראות את הפרופיל הרגיל למעלה. השם והסטטוס של החשבון עצמו משותפים לכל השרתים (מגבלה של דיסקורד)."))}</p>
-      ${!sp ? `<div class="muted small">${esc(t("טוען…"))}</div>` : !sp.account ? `<div class="notice warn">${esc(t("הבוט צריך להיות מחובר ובשרת הזה"))}</div>` : `
-      <div class="personalizer">
-        <div class="pz-col">
-          <div class="field"><span class="label">${esc(t("תמונה בשרת הזה"))}</span>
-            <label class="pz-icon file-btn"><img alt="" src="${img(S.spAvatar, sp.avatar_url, sp.default_avatar)}">
-              <input type="file" id="sp-avatar-file" accept="image/png,image/jpeg,image/gif,image/webp"><span class="pz-edit">✎</span></label>
-            ${sp.avatar_url ? `<button class="btn btn-sm btn-ghost" data-action="sp-reset" data-field="avatar">${esc(t("חזרה לתמונה הרגילה"))}</button>` : ""}</div>
-          <div class="field"><span class="label">${esc(t("באנר בשרת הזה"))}</span>
-            <label class="pz-banner file-btn" style="${S.spBanner || sp.banner_url ? `background-image:url('${img(S.spBanner, sp.banner_url)}')` : ""}">
-              <input type="file" id="sp-banner-file" accept="image/png,image/jpeg,image/gif,image/webp"><span class="pz-edit">✎</span></label>
-            ${sp.banner_url ? `<button class="btn btn-sm btn-ghost" data-action="sp-reset" data-field="banner">${esc(t("חזרה לבאנר הרגיל"))}</button>` : ""}</div>
-        </div>
-        <div class="pz-col grow">
-          <div class="field"><span class="label">${esc(t("כינוי בשרת הזה"))}</span>
-            <input type="text" id="sp-nick" maxlength="32" value="${esc(sp.nick)}" placeholder="${esc(sp.default_name)}">
-            <span class="hint">${esc(t("ריק = השם הרגיל של הבוט"))}</span></div>
-          <div class="field"><span class="label">${esc(t("ביו בשרת הזה"))}</span>
-            <textarea id="sp-bio" maxlength="190" rows="3">${esc(sp.bio)}</textarea></div>
-          <div class="row" style="margin-top:8px"><button class="btn btn-primary" data-action="sp-save">${esc(t("שמור לשרת הזה"))}</button></div>
-        </div>
-      </div>`}
-    </div>`;
-}
-
-async function loadServerProfile() {
-  if (!S.guildId) return;
-  try { S.serverProfile = { ...(await api("GET", `/guilds/${S.guildId}/member-profile`)), gid: S.guildId }; }
-  catch (e) { S.serverProfile = { gid: S.guildId, account: null }; }
-  S.spAvatar = null; S.spBanner = null;
-  if (S.page === "profile") $("#main").innerHTML = viewProfile();
+    <div id="profile-msg"></div>`;
 }
 
 function refreshProfilePreview() { const box = $("#pz-preview"); if (box) box.innerHTML = viewProfilePreview(); }
@@ -665,6 +680,14 @@ async function loadProfile() {
     const box = $("#profile-msg");
     if (box) box.innerHTML = `<div class="notice error">${esc(errMessage(e))}</div>`;
   }
+}
+
+async function loadServerProfile() {
+  if (!S.guildId) return;
+  try { S.serverProfile = { ...(await api("GET", `/guilds/${S.guildId}/member-profile`)), gid: S.guildId }; }
+  catch (e) { S.serverProfile = { gid: S.guildId, account: null }; }
+  S.spAvatar = null; S.spBanner = null;
+  if (S.page === "profile") $("#main").innerHTML = viewProfile();
 }
 
 /* ===== updates ===== */
@@ -1575,7 +1598,7 @@ const actions = {
     await guarded(btn, async () => toast((await api("POST", `/secrets/${btn.dataset.name}/test`)).message, "ok"));
   },
   async "delete-secret"(btn) {
-    if (!(await confirmDialog("למחוק את " + btn.dataset.label + "?", "הערך יימחק מ-Windows Credential Manager. כדי להשתמש בו שוב, תצטרך להדביק אותו מחדש.", "מחק"))) return;
+    if (!(await confirmDialog(t("למחוק את {name}?", { name: btn.dataset.label }), "הערך יימחק מ-Windows Credential Manager. כדי להשתמש בו שוב, תצטרך להדביק אותו מחדש.", "מחק"))) return;
     await guarded(btn, async () => {
       await api("DELETE", "/secrets/" + btn.dataset.name);
       S.settings = await api("GET", "/settings");
@@ -1631,12 +1654,17 @@ const actions = {
     const body = { nick: $("#sp-nick").value, bio: $("#sp-bio").value };
     if (S.spAvatar) body.avatar = S.spAvatar;
     if (S.spBanner) body.banner = S.spBanner;
+    const pr = presenceDraft();
+    const presenceChanged = S.profile && JSON.stringify(pr) !== JSON.stringify(S.profile.presence);
     await guarded(btn, async () => {
+      if (presenceChanged) S.profile.presence = await api("PUT", "/presence", pr);
       await api("PUT", `/guilds/${S.guildId}/member-profile`, body);
       toast("הפרופיל בשרת הזה עודכן", "ok");
       await loadServerProfile();
     });
   },
+  "profile-scope"(btn) { S.profileScope = btn.dataset.scope; S.spAvatar = null; S.spBanner = null; render(); },
+  "sp-discard"(btn) { if (btn.dataset.field === "banner") S.spBanner = null; else S.spAvatar = null; $("#main").innerHTML = viewProfile(); },
   async "sp-reset"(btn) {
     await guarded(btn, async () => {
       await api("PUT", `/guilds/${S.guildId}/member-profile`, { reset: [btn.dataset.field] });
@@ -2180,6 +2208,34 @@ document.addEventListener("keydown", (e) => {
   if (e.target.id === "chat-input" && e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
 });
 
+/* ===== mouse Back / Forward buttons and Alt+Left / Alt+Right ===== */
+let lastNavStep = 0;
+async function navStep(dir) {
+  lastNavStep = Date.now();
+  const from = dir < 0 ? NAV_HISTORY.back : NAV_HISTORY.forward;
+  const to = dir < 0 ? NAV_HISTORY.forward : NAV_HISTORY.back;
+  if (!from.length) return;
+  const target = from[from.length - 1], current = S.page;
+  await go(target, true);
+  if (S.page === target) { from.pop(); to.push(current); }
+}
+document.addEventListener("mouseup", (e) => {
+  if (e.button === 3 || e.button === 4) { e.preventDefault(); navStep(e.button === 3 ? -1 : 1); }
+});
+document.addEventListener("mousedown", (e) => { if (e.button === 3 || e.button === 4) e.preventDefault(); });
+document.addEventListener("keydown", (e) => {
+  if (e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+    e.preventDefault();
+    const rtl = document.documentElement.dir === "rtl";
+    const back = e.key === (rtl ? "ArrowRight" : "ArrowLeft");
+    navStep(back ? -1 : 1);
+  }
+});
+window.addEventListener("popstate", () => {  // a browser-level Back (just in case) also stays inside the app
+  history.pushState({ app: true }, "");
+  if (Date.now() - lastNavStep > 600) navStep(-1);  // not twice when the mouse button was already handled
+});
+
 /* ===== events ===== */
 document.addEventListener("click", (e) => {
   if (!e.target.closest(".chan-combo")) document.querySelectorAll(".chan-pop").forEach((p) => p.remove());
@@ -2218,6 +2274,7 @@ document.addEventListener("change", async (e) => {
     S.guildId = t.value;
     S.cust = null;
     await loadGuild();
+    if (S.page === "profile") { S.serverProfile = null; render(); loadServerProfile(); }
     if (S.page === "customize") render(), afterCustomizeRender();
     return;
   }
@@ -2304,12 +2361,13 @@ document.addEventListener("input", (e) => {
   if (e.target.id === "search-input") { searchSel = 0; renderSearch(); }
   if (e.target.id === "pr-text") { presenceDraft().text = e.target.value; refreshProfilePreview(); }
   if (e.target.id === "pr-url") presenceDraft().url = e.target.value.trim();
-  if (e.target.id === "bot-username") refreshProfilePreview();
+  if (e.target.id === "bot-username" || e.target.id === "sp-nick") refreshProfilePreview();
 });
 window.addEventListener("beforeunload", (e) => { if (S.dirty) { e.preventDefault(); e.returnValue = ""; } });
 
 /* ===== boot ===== */
 async function boot() {
+  history.pushState({ app: true }, "");  // so a browser-level Back never leaves the app
   renderNav();
   render();
   if (!TOKEN) {

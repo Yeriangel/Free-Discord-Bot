@@ -57,6 +57,9 @@ def module_defaults(key: str, lang: str = "he") -> dict:
         value = copy.deepcopy(f["default"])
         if lang != "he" and isinstance(value, str) and f["type"] in ("text", "textarea"):
             value = tr(value, lang)
+        elif lang != "he" and f["type"] == "list" and isinstance(value, list):
+            texts = {i["key"] for i in f.get("item_fields", []) if i["type"] in ("text", "textarea")}
+            value = [{k: (tr(v, lang) if k in texts and isinstance(v, str) else v) for k, v in row.items()} for row in value]
         out[f["key"]] = value
     return out
 
@@ -71,6 +74,9 @@ def strip_defaults(key: str, raw: dict | None) -> dict:
         default = f.get("default")
         if f["type"] in ("text", "textarea") and isinstance(default, str) and default and f["key"] in raw:
             if str(raw[f["key"]]).strip() in {tr(default, lang).strip() for lang in LANGS}:
+                del raw[f["key"]]
+        elif f["type"] == "list" and default and f["key"] in raw:
+            if any(raw[f["key"]] == module_defaults(key, lang)[f["key"]] for lang in LANGS):
                 del raw[f["key"]]
     return raw
 

@@ -28,6 +28,14 @@ def test_coverage_tool():
     print("ok coverage:", first)
 
 
+def test_ui_texts_all_translated():
+    """Every Hebrew text in the UI code (labels in arrays and dropdowns too) and in list defaults has a translation."""
+    out = subprocess.run([sys.executable, str(ROOT / "tools/ui_hebrew_audit.py"), "--strict"], capture_output=True, text=True,
+                         encoding="utf-8", env={**__import__("os").environ, "PYTHONIOENCODING": "utf-8"})
+    assert out.returncode == 0, out.stdout[-2000:]
+    print("ok", out.stdout.strip().splitlines()[-1])
+
+
 def test_placeholders_and_completeness():
     ph = re.compile(r"\{\w+\}|%[sd+]")
     for key, row in i18n.table().items():
