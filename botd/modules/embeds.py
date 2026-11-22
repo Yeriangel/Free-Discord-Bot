@@ -14,10 +14,17 @@ def _url(value: str) -> str | None:
 
 
 def build_embed(cfg: dict) -> discord.Embed:
-    if not (cfg.get("title") or "").strip() and not (cfg.get("description") or "").strip():
+    if not any((cfg.get(k) or "").strip() for k in ("title", "description", "author_name")) and not cfg.get("fields"):
         raise ValueError(tr("צריך כותרת או תוכן"))
     embed = discord.Embed(title=cfg.get("title") or None, description=cfg.get("description") or None,
-                          color=parse_color(cfg.get("color", "")))
+                          url=_url(cfg.get("url", "")) if cfg.get("title") else None, color=parse_color(cfg.get("color", "")))
+    if cfg.get("author_name"):
+        embed.set_author(name=cfg["author_name"][:256], icon_url=_url(cfg.get("author_icon", "")))
+    for f in (cfg.get("fields") or [])[:25]:
+        if f.get("name") and f.get("value"):
+            embed.add_field(name=f["name"][:256], value=f["value"][:1024], inline=bool(f.get("inline")))
+    if cfg.get("timestamp"):
+        embed.timestamp = discord.utils.utcnow()
     if _url(cfg.get("image_url", "")):
         embed.set_image(url=_url(cfg["image_url"]))
     if _url(cfg.get("thumbnail_url", "")):

@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -50,12 +51,12 @@ def stop_old_service(session: dict, timeout: float = 15.0) -> None:
         time.sleep(0.3)
 
 
-def ensure_service(timeout: float = 20.0) -> dict:
+def ensure_service(timeout: float = 20.0, force_restart: bool = False) -> dict:
     from botd import __version__, build_id
 
     session = read_session()
     running = running_build(session)
-    if running is not None and running == f"{__version__}/{build_id()}":
+    if running is not None and running == f"{__version__}/{build_id()}" and not force_restart:
         return session
     if running is not None:  # the service runs older code than the files on disk (update or new build): restart it
         stop_old_service(session)
@@ -84,9 +85,21 @@ def ensure_service(timeout: float = 20.0) -> dict:
     raise RuntimeError(f"The bot service did not start. Check the log: {paths.log_dir() / 'botd.log'}")
 
 
+def launch_detached(*args: str) -> None:
+    """Starts another copy of this launcher (used by the app's "Restart now" button after an update)."""
+    exe = Path(sys.executable)
+    pythonw = exe.with_name("pythonw.exe")
+    flags = 0
+    if os.name == "nt":
+        flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+    subprocess.Popen([str(pythonw if pythonw.exists() else exe), str(ROOT / "app.py"), *args], cwd=str(ROOT),
+                     creationflags=flags, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     close_fds=True)
+
+
 def main() -> int:
     try:
-        session = ensure_service()
+        session = ensure_service(force_restart="--restart" in sys.argv)
     except RuntimeError as exc:
         webview.create_window("Bot Manager: error", html=f"<body style='font-family:Segoe UI;padding:24px'>{exc}</body>")
         webview.start()
@@ -103,12 +116,30 @@ def main() -> int:
         text_select=True,
     )
 
+    replaced = threading.Event()
+
+    def watch_for_newer_window():
+        """After "Restart now", a new launcher starts a new service and window; this old window then closes itself."""
+        while not replaced.is_set():
+            time.sleep(1.5)
+            current = read_session()
+            if current and current.get("token") != session["token"] and session_alive(current):
+                replaced.set()
+                try:
+                    window.destroy()
+                except Exception:  # noqa: BLE001 - the window may already be gone
+                    pass
+
     def on_closed():
+        if replaced.is_set():
+            return
+        replaced.set()
         settings = _call(session, "GET", "/settings") or {}
         if not settings.get("settings", {}).get("keep_running_on_close"):
             _call(session, "POST", "/shutdown")
 
     window.events.closed += on_closed
+    threading.Thread(target=watch_for_newer_window, daemon=True).start()
     webview.start(private_mode=True)
     return 0
 

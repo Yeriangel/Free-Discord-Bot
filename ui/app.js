@@ -528,6 +528,8 @@ function viewConnection() {
       <h3>התנהגות</h3>
       ${toggleRow("autostart_bot", "להפעיל את הבוט אוטומטית כשהשירות עולה", s.autostart_bot)}
       ${toggleRow("keep_running_on_close", "להשאיר את הבוט רץ ברקע כשסוגרים את החלון", s.keep_running_on_close)}
+      ${toggleRow("start_with_windows", "להפעיל את הבוט ברקע כשנכנסים ל-Windows (בלי חלון)", S.settings.start_with_windows)}
+      <span class="hint">${esc(t("כשהמחשב כבוי, הבוט לא יכול לעבוד. כדי שיעבוד 24/7, אפשר להריץ אותו על מחשב שתמיד דלוק (שרת ענן קטן או Raspberry Pi)."))}</span>
     </div>
     <div class="notice">
       ${t("<b>Privileged Intents:</b> מודולים כמו ברוכים הבאים ואוטומוד צריכים את Server Members Intent ואת Message Content Intent. אפשר להפעיל אותם בלחיצה על 'הפעל אוטומטית' בעמודי המודולים, או ידנית ב-Developer Portal, בלשונית Bot.")}
@@ -743,10 +745,72 @@ function viewPermissions() {
 /* ===== pickers & field renderers ===== */
 function channelPicker(attrs, value, objects, emptyLabel = "ללא", list = "text_channels") {
   if (!objects) return `<input type="text" class="ltr" ${attrs} value="${esc(value)}" placeholder="מזהה ערוץ (הפעל את הבוט כדי לבחור מרשימה)">`;
-  const icon = list === "voice_channels" ? "🔊 " : "# ";
-  const opts = [`<option value="">${esc(emptyLabel)}</option>`].concat((objects[list] || []).map((c) =>
-    `<option value="${esc(c.id)}" ${c.id === value ? "selected" : ""} class="no-translate">${icon}${esc(c.name)}${c.category ? ` · ${esc(c.category)}` : ""}</option>`));
-  return `<select ${attrs}>${opts.join("")}</select>`;
+  const kind = list === "voice_channels" ? "voice" : "text";
+  const cur = (objects[list] || []).find((c) => c.id === value);
+  return `<div class="chan-combo" data-list="${list}" data-kind="${kind}" data-empty="${esc(emptyLabel)}">
+      <input type="hidden" ${attrs} value="${esc(value)}">
+      <button type="button" class="chan-btn" data-action="chan-open">${chanLabel(cur, kind, emptyLabel)}<span class="caret">▾</span></button>
+    </div>`;
+}
+
+const CHANNEL_SUGGESTIONS = { welcome: "welcome", logs: "logs", starboard: "starboard", suggestions: "suggestions", ticketing: "tickets",
+  birthdays: "birthdays", levels: "level-ups", social_alerts: "alerts", invite_tracker: "invites", embed_messages: "announcements",
+  reminders: "reminders", restricted_channels: "media", temp_channels: "Join to Create", giveaways: "giveaways" };
+
+function chanLabel(c, kind, emptyLabel) {
+  if (!c) return `<span class="muted">${esc(t(emptyLabel))}</span>`;
+  return `<span class="chan-ico">${kind === "voice" ? "🔊" : "#"}</span><span class="no-translate chan-name">${esc(c.name)}</span>`;
+}
+
+function slugChannel(name, kind) {
+  name = (name || "").trim();
+  return kind === "voice" ? name.slice(0, 100) : name.toLowerCase().replace(/[\s_]+/g, "-").replace(/[^\p{L}\p{N}\p{Emoji}\-│|]/gu, "").slice(0, 100);
+}
+
+function openChanCombo(combo) {
+  document.querySelectorAll(".chan-pop").forEach((p) => p.remove());
+  const list = combo.dataset.list, kind = combo.dataset.kind;
+  const chans = (S.guild && S.guild.objects && S.guild.objects[list]) || [];
+  const groups = {};
+  chans.forEach((c) => { (groups[c.category || ""] ||= []).push(c); });
+  const key = S.page.startsWith("mod:") ? S.page.slice(4) : "";
+  const suggestion = CHANNEL_SUGGESTIONS[key] || (kind === "voice" ? "Voice" : "new-channel");
+  const pop = document.createElement("div");
+  pop.className = "chan-pop";
+  pop.innerHTML = `
+    <input type="search" class="chan-search" placeholder="${esc(t("חיפוש ערוץ"))}" autocomplete="off">
+    <div class="chan-list">
+      <div class="chan-sec">${esc(t("אפשרויות"))}</div>
+      <button type="button" class="chan-opt" data-action="chan-pick" data-id="">${esc(t(combo.dataset.empty || "ללא"))}</button>
+      <button type="button" class="chan-opt chan-create" data-action="chan-create" data-name="${esc(suggestion)}">✎ <span>${esc(t("צור לי ערוץ"))}</span> <b class="no-translate">${kind === "voice" ? "🔊" : "#"}${esc(slugChannel(suggestion, kind))}</b></button>
+      ${Object.entries(groups).map(([cat, cs]) => `
+        <div class="chan-sec no-translate">${esc(cat || t("ערוצים"))}</div>
+        ${cs.map((c) => `<button type="button" class="chan-opt no-translate" data-action="chan-pick" data-id="${esc(c.id)}" data-search="${esc(c.name.toLowerCase())}">
+          <span class="chan-ico">${kind === "voice" ? "🔊" : "#"}</span>${esc(c.name)}</button>`).join("")}`).join("")}
+    </div>`;
+  combo.appendChild(pop);
+  const search = pop.querySelector(".chan-search");
+  search.focus();
+  search.addEventListener("input", () => {
+    const q = search.value.trim().toLowerCase();
+    pop.querySelectorAll(".chan-opt[data-search]").forEach((b) => { b.style.display = !q || b.dataset.search.includes(q) ? "" : "none"; });
+    const create = pop.querySelector(".chan-create");
+    const name = q ? search.value.trim() : suggestion;
+    create.dataset.name = name;
+    create.querySelector("b").textContent = (kind === "voice" ? "🔊" : "#") + slugChannel(name, kind);
+  });
+  search.addEventListener("keydown", (e) => { if (e.key === "Escape") pop.remove(); });
+}
+
+function setChanValue(combo, id) {
+  const input = combo.querySelector("input[type=hidden]");
+  const chans = (S.guild && S.guild.objects && S.guild.objects[combo.dataset.list]) || [];
+  input.value = id;
+  combo.querySelector(".chan-btn").innerHTML = chanLabel(chans.find((c) => c.id === id), combo.dataset.kind, combo.dataset.empty) + `<span class="caret">▾</span>`;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+  const pop = combo.querySelector(".chan-pop");
+  if (pop) pop.remove();
 }
 
 function rolePicker(attrs, value, objects, emptyLabel = "בחר תפקיד") {
@@ -770,6 +834,7 @@ function simpleInput(f, value, attrs, o) {
   switch (f.type) {
     case "number": return `<input type="text" inputmode="numeric" class="ltr narrow" ${attrs} value="${esc(value)}">`;
     case "date": return `<input type="date" class="ltr" ${attrs} value="${esc(value)}">`;
+    case "bool": return `<label class="switch"><input type="checkbox" ${attrs} ${value ? "checked" : ""}><span class="slider"></span></label>`;
     case "select": return `<select ${attrs}>${f.options.map(([v, l]) => `<option value="${esc(v)}" ${v === value ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
     case "channel": return channelPicker(attrs, value, o);
     case "voice_channel": return channelPicker(attrs, value, o, "ללא", "voice_channels");
@@ -780,17 +845,37 @@ function simpleInput(f, value, attrs, o) {
   }
 }
 
+const CMD_EXAMPLES = {
+  type: { name: "type", kind: "slash", response: "{args}", delete_trigger: true, send_mode: "channel", description: "הבוט כותב את ההודעה שלך", arg_hint: "מה הבוט יכתוב" },
+  randomnumber: { name: "randomnumber", kind: "slash", response: "🎲 {random}", send_mode: "reply", description: "מספר אקראי בין שני מספרים", arg_hint: "למשל: 1 to 1000" },
+  coin: { name: "coin", kind: "both", response: "🪙 {choose:עץ|פלי}", send_mode: "reply", description: "הטלת מטבע", arg_hint: "" },
+};
+
 function commandRow(c, o) {
-  c = { name: "", response: "", role_id: "", role_action: "none", ...(c || {}) };
+  c = { name: "", response: "", role_id: "", role_action: "none", kind: "slash", send_mode: "channel", delete_trigger: false, description: "", arg_hint: "", ...(c || {}) };
   const actions = [["none", "בלי תפקיד"], ["add", "נותן תפקיד"], ["remove", "מוריד תפקיד"], ["toggle", "נותן או מוריד"]];
-  return `<div class="cmd-row">
-      <input type="text" class="cmd-name ltr" value="${esc(c.name)}" placeholder="rules" maxlength="32">
-      <textarea class="cmd-resp" placeholder="התשובה של הבוט">${esc(c.response)}</textarea>
+  const kinds = [["slash", "פקודת סלאש (/)"], ["prefix", "פקודת טקסט (קידומת)"], ["both", "גם וגם"]];
+  const modes = [["channel", "הבוט שולח בערוץ"], ["reply", "תשובה לפקודה"], ["dm", "הודעה פרטית"]];
+  const sel = (cls, list, v) => `<select class="${cls}">${list.map(([k, l]) => `<option value="${k}" ${k === v ? "selected" : ""}>${esc(t(l))}</option>`).join("")}</select>`;
+  return `<div class="cmd-row cmd-row-v2">
+      <div class="cmd-line">
+        <span class="cmd-slash ltr">${c.kind === "prefix" ? "!" : "/"}</span>
+        <input type="text" class="cmd-name ltr" value="${esc(c.name)}" placeholder="type" maxlength="32">
+        ${sel("cmd-kind", kinds, c.kind)}
+        ${sel("cmd-mode", modes, c.send_mode)}
+        <label class="row small" title="${esc(t("בפקודת טקסט: הבוט מוחק את ההודעה שלך ושולח רק את התשובה"))}"><input type="checkbox" class="cmd-del" ${c.delete_trigger ? "checked" : ""}> ${esc(t("למחוק את ההודעה שלי"))}</label>
+        <div class="spacer"></div>
+        <button class="btn btn-sm btn-ghost" data-action="row-remove" title="הסר">✕</button>
+      </div>
+      <textarea class="cmd-resp" rows="2" placeholder="${esc(t("התשובה של הבוט. למשל: {args} או 🎲 {random}"))}">${esc(c.response)}</textarea>
+      <div class="cmd-line">
+        <input type="text" class="cmd-desc" value="${esc(c.description)}" placeholder="${esc(t("תיאור בדיסקורד (לפקודת סלאש)"))}" maxlength="100">
+        <input type="text" class="cmd-hint" value="${esc(c.arg_hint)}" placeholder="${esc(t("הסבר לשדה הטקסט (לא חובה)"))}" maxlength="100">
+      </div>
       <div class="cmd-role">
         <select class="cmd-raction">${actions.map(([v, l]) => `<option value="${v}" ${v === c.role_action ? "selected" : ""}>${l}</option>`).join("")}</select>
         ${rolePicker('class="cmd-roleid"', c.role_id, o, "תפקיד")}
       </div>
-      <button class="btn btn-sm btn-ghost" data-action="row-remove" title="הסר">✕</button>
     </div>`;
 }
 
@@ -833,7 +918,9 @@ function renderField(f, value, g) {
       break;
     case "commands":
       input = `<div class="cmd-list" ${attrs}>${(value || []).map((c) => commandRow(c, o)).join("")}</div>
-        <button class="btn btn-sm" data-action="cmd-add">+ הוסף פקודה</button>`;
+        <div class="row" style="flex-wrap:wrap"><button class="btn btn-sm" data-action="cmd-add">+ הוסף פקודה</button>
+          <span class="muted small">${esc(t("דוגמאות:"))}</span>
+          ${Object.keys(CMD_EXAMPLES).map((k) => `<button class="btn btn-sm btn-ghost ltr" data-action="cmd-example" data-ex="${k}">/${k}</button>`).join("")}</div>`;
       break;
     case "channels": input = multiPicker(f.key, value, o && o.text_channels, "channel"); break;
     case "roles": input = multiPicker(f.key, value, o && o.roles, "role"); break;
@@ -1089,7 +1176,7 @@ function moduleWarnings(m, g) {
   if (g && g.objects && m.permissions.length) {
     const have = new Set(g.objects.bot_permissions);
     const missing = have.has("administrator") ? [] : m.permissions.filter((p) => !have.has(p));
-    if (missing.length) out.push({ badge: "חסרות הרשאות", text: `לבוט חסרות בשרת הזה ההרשאות: ${missing.map(permLabel).join(", ")}. צור קישור הזמנה חדש בעמוד 'הרשאות והזמנה'.` });
+    if (missing.length) out.push({ badge: t("חסרות הרשאות"), text: t("לבוט חסרות בשרת הזה ההרשאות: {list}. צור קישור הזמנה חדש בעמוד 'הרשאות והזמנה'.", { list: missing.map(permLabel).join(", ") }) });
   }
   return out;
 }
@@ -1214,8 +1301,10 @@ const EXTRA_TABLES = {
 
 function moduleExtras(key) {
   let out = "";
-  if (key === "embed_messages") out += `<div class="card section row"><span class="grow muted">${esc(t("שמור קודם, ואז שלח. ההודעה נשלחת לערוץ שבחרת."))}</span>
-    <button class="btn btn-primary" data-action="embed-send">${esc(t("שלח לדיסקורד"))}</button></div>`;
+  if (key === "embed_messages") out += `<div class="card section"><div class="row"><h3>${esc(t("תצוגה מקדימה"))}</h3><div class="spacer"></div>
+    <span class="muted small">${esc(t("שמור קודם, ואז פרסם. ההודעה נשלחת לערוץ שבחרת."))}</span>
+    <button class="btn btn-primary" data-action="embed-send">${esc(t("פרסם"))}</button></div>
+    <div id="embed-preview" class="embed-preview-wrap no-translate" style="margin-top:12px"></div></div>`;
   if (key === "ticketing") out += `<div class="card section row"><span class="grow muted">${esc(t("אחרי השמירה, פרסם את ההודעה עם הכפתור בערוץ שבחרת."))}</span>
     <button class="btn btn-primary" data-action="ticket-panel">${esc(t("פרסם כפתור"))}</button></div>`;
   if (key === "social_alerts") out += `<div class="notice">${esc(t("TikTok ו-X (טוויטר) לא נתמכים: אין להם API או פיד חינמי. בפעם הראשונה הבוט רק זוכר מה כבר קיים, ומתריע רק על תוכן חדש."))}</div>
@@ -1259,8 +1348,36 @@ async function loadSocialStatus() {
     </tbody></table>`;
 }
 
+function embedPreviewHTML(c) {
+  const safeUrl = (u) => /^https?:\/\//i.test(u || "") ? u : "";
+  const md = (s) => esc(s || "").replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/\*(.+?)\*/g, "<i>$1</i>").replace(/__(.+?)__/g, "<u>$1</u>").replace(/`(.+?)`/g, "<code>$1</code>").replace(/\n/g, "<br>");
+  const color = /^#[0-9a-f]{6}$/i.test(c.color || "") ? c.color : "#6D5DFC";
+  const fields = (c.fields || []).filter((f) => f.name && f.value);
+  const empty = !c.title && !c.description && !c.author_name && !fields.length;
+  return `
+    ${c.content ? `<div class="emb-content">${md(c.content)}</div>` : ""}
+    ${empty ? `<div class="muted small">${esc(t("ה-Embed ריק. מלא כותרת או תוכן."))}</div>` : `
+    <div class="emb" style="border-inline-start-color:${esc(color)}">
+      <div class="emb-main">
+        ${c.author_name ? `<div class="emb-author">${safeUrl(c.author_icon) ? `<img src="${esc(c.author_icon)}" alt="">` : ""}${esc(c.author_name)}</div>` : ""}
+        ${c.title ? `<div class="emb-title">${safeUrl(c.url) ? `<a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.title)}</a>` : esc(c.title)}</div>` : ""}
+        ${c.description ? `<div class="emb-desc">${md(c.description)}</div>` : ""}
+        ${fields.length ? `<div class="emb-fields">${fields.map((f) => `<div class="emb-field ${f.inline ? "inline" : ""}"><b>${esc(f.name)}</b><div>${md(f.value)}</div></div>`).join("")}</div>` : ""}
+        ${safeUrl(c.image_url) ? `<img class="emb-image" src="${esc(c.image_url)}" alt="">` : ""}
+        ${c.footer || c.timestamp ? `<div class="emb-footer">${esc(c.footer || "")}${c.footer && c.timestamp ? " • " : ""}${c.timestamp ? esc(new Date().toLocaleString()) : ""}</div>` : ""}
+      </div>
+      ${safeUrl(c.thumbnail_url) ? `<img class="emb-thumb" src="${esc(c.thumbnail_url)}" alt="">` : ""}
+    </div>`}`;
+}
+
+function refreshEmbedPreview() {
+  const box = $("#embed-preview");
+  if (box && S.page === "mod:embed_messages") box.innerHTML = embedPreviewHTML(collectModuleForm("embed_messages"));
+}
+
 function afterModuleRender(key) {
   loadExtraTable(key);
+  if (key === "embed_messages") refreshEmbedPreview();
   if (key === "social_alerts") loadSocialStatus();
   if (key === "levels") loadLeaderboard();
   if (key === "economy") loadRichList();
@@ -1318,7 +1435,7 @@ function collectModuleForm(key) {
   const form = document.querySelector(`[data-module-form="${key}"]`);
   const config = {};
   if (!form) return config;
-  const readCell = (el, type) => (type === "lines" ? el.value.split("\n").map((s) => s.trim()).filter(Boolean) : el.value);
+  const readCell = (el, type) => (type === "lines" ? el.value.split("\n").map((s) => s.trim()).filter(Boolean) : type === "bool" ? el.checked : el.value);
   form.querySelectorAll("[data-field]").forEach((el) => {
     const f = el.dataset.field, t = el.dataset.ftype;
     if (t === "bool") config[f] = el.checked;
@@ -1339,6 +1456,9 @@ function collectModuleForm(key) {
       config[f] = [...el.querySelectorAll(".cmd-row")].map((r) => ({
         name: r.querySelector(".cmd-name").value, response: r.querySelector(".cmd-resp").value,
         role_action: r.querySelector(".cmd-raction").value, role_id: r.querySelector(".cmd-roleid").value,
+        kind: (r.querySelector(".cmd-kind") || {}).value || "prefix", send_mode: (r.querySelector(".cmd-mode") || {}).value || "channel",
+        delete_trigger: !!(r.querySelector(".cmd-del") || {}).checked, description: (r.querySelector(".cmd-desc") || {}).value || "",
+        arg_hint: (r.querySelector(".cmd-hint") || {}).value || "",
       }));
     } else if (t === "automations") config[f] = S.autos;
     else if (t !== "reaction_roles") config[f] = el.value;
@@ -1494,6 +1614,19 @@ const actions = {
   "perm-recommended"() { S.permSel = new Set(S.catalog.recommended_permissions); render(); },
   "perm-none"() { S.permSel = new Set(); render(); },
   "extra-reload"() { loadExtraTable(S.page.slice(4)); },
+  "chan-open"(btn) { const combo = btn.closest(".chan-combo"); if (combo.querySelector(".chan-pop")) combo.querySelector(".chan-pop").remove(); else openChanCombo(combo); },
+  "chan-pick"(btn) { setChanValue(btn.closest(".chan-combo"), btn.dataset.id); },
+  async "chan-create"(btn) {
+    const combo = btn.closest(".chan-combo");
+    const kind = combo.dataset.kind;
+    await guarded(btn, async () => {
+      const ch = await api("POST", `/guilds/${S.guildId}/channels`, { name: slugChannel(btn.dataset.name, kind), kind });
+      const list = S.guild.objects[combo.dataset.list] || (S.guild.objects[combo.dataset.list] = []);
+      list.push({ id: ch.id, name: ch.name, category: "" });
+      setChanValue(combo, ch.id);
+      toast(t("הערוץ {name} נוצר", { name: (kind === "voice" ? "🔊" : "#") + ch.name }), "ok");
+    });
+  },
   async "sp-save"(btn) {
     const body = { nick: $("#sp-nick").value, bio: $("#sp-bio").value };
     if (S.spAvatar) body.avatar = S.spAvatar;
@@ -1539,7 +1672,7 @@ const actions = {
   },
   async "embed-send"(btn) {
     if (S.dirty) { toast("שמור קודם את השינויים", "error"); return; }
-    await guarded(btn, async () => { await api("POST", `/guilds/${S.guildId}/embed/send`); toast("ההודעה נשלחה", "ok"); });
+    await guarded(btn, async () => { await api("POST", `/guilds/${S.guildId}/embed/send`); toast("ההודעה פורסמה", "ok"); });
   },
   async "ticket-panel"(btn) {
     if (S.dirty) { toast("שמור קודם את השינויים", "error"); return; }
@@ -1643,7 +1776,12 @@ const actions = {
     [acts[j - 1], acts[j]] = [acts[j], acts[j - 1]];
     setDirty(true); rerenderAutos();
   },
-  "cmd-add"(btn) { btn.previousElementSibling.insertAdjacentHTML("beforeend", commandRow(null, S.guild.objects)); setDirty(true); },
+  "cmd-add"(btn) { document.querySelector(".cmd-list").insertAdjacentHTML("beforeend", commandRow(null, S.guild.objects)); setDirty(true); },
+  "cmd-example"(btn) {
+    const ex = { ...CMD_EXAMPLES[btn.dataset.ex] };
+    ex.description = t(ex.description); ex.arg_hint = t(ex.arg_hint); ex.response = t(ex.response);
+    document.querySelector(".cmd-list").insertAdjacentHTML("beforeend", commandRow(ex, S.guild.objects)); setDirty(true);
+  },
   "list-add"(btn) {
     const m = mod(S.page.slice(4));
     const f = m.fields.find((x) => x.key === btn.dataset.fkey);
@@ -1697,8 +1835,9 @@ const actions = {
     await guarded(btn, async () => {
       btn.textContent = t("מתקין…");
       await api("POST", "/updates/install", { tag: btn.dataset.tag });
-      await confirmDialog("הגרסה הותקנה", "סגור את האפליקציה ופתח אותה מחדש כדי להתחיל לעבוד עם הגרסה החדשה.", "הבנתי", false);
-      loadUpdates();
+      const now = await confirmDialog("הגרסה הותקנה", "לחץ 'הפעל מחדש' והאפליקציה תיסגר ותיפתח מחדש לבד על הגרסה החדשה. הבוט יתנתק לכמה שניות ויחזור.", "הפעל מחדש", false);
+      if (now) { await api("POST", "/app/restart"); toast("האפליקציה נפתחת מחדש…", "ok"); }
+      else loadUpdates();
     });
   },
   "levels-reload"() { loadLeaderboard(); },
@@ -2027,6 +2166,10 @@ document.addEventListener("change", (e) => {
   if (el.dataset && el.dataset.look === "theme") { lookDraft().theme = el.value; applyAppearance(lookDraft()); }
   if (el.id === "chat-guild") { S.chatChannel = ""; loadChatChannels(el.value); }
   if (el.id === "chat-channel") { S.chatChannel = el.value; loadChatMessages(); }
+  if (el.classList && el.classList.contains("cmd-kind")) {
+    const slash = el.closest(".cmd-row").querySelector(".cmd-slash");
+    if (slash) slash.textContent = el.value === "prefix" ? "!" : "/";
+  }
 });
 document.addEventListener("keydown", (e) => {
   if (e.target.id === "console-input") {
@@ -2039,6 +2182,7 @@ document.addEventListener("keydown", (e) => {
 
 /* ===== events ===== */
 document.addEventListener("click", (e) => {
+  if (!e.target.closest(".chan-combo")) document.querySelectorAll(".chan-pop").forEach((p) => p.remove());
   const sr = e.target.closest("[data-search-page]");
   if (sr) { closeSearch(); go(sr.dataset.searchPage); return; }
   if (e.target.id === "search") { closeSearch(); return; }
@@ -2061,6 +2205,8 @@ function markDirty(e) {
   }
 }
 document.addEventListener("input", markDirty);
+document.addEventListener("input", (e) => { if (S.page === "mod:embed_messages" && e.target.closest("[data-module-form]")) refreshEmbedPreview(); });
+document.addEventListener("change", (e) => { if (S.page === "mod:embed_messages" && e.target.closest("[data-module-form]")) refreshEmbedPreview(); });
 
 document.addEventListener("change", async (e) => {
   markDirty(e);
@@ -2120,7 +2266,7 @@ document.addEventListener("change", async (e) => {
     return;
   }
   if (t.dataset.setting) {
-    try { S.settings = await api("PUT", "/settings", { [t.dataset.setting]: t.checked }); toast("נשמר", "ok"); }
+    try { S.settings = await api("PUT", "/settings", { [t.dataset.setting]: t.checked }); toast("נשמר", "ok"); if (t.dataset.setting === "start_with_windows") render(); }
     catch (err) { t.checked = !t.checked; toast(errMessage(err), "error"); }
     return;
   }

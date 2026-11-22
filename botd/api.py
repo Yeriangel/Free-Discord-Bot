@@ -37,6 +37,7 @@ class SettingsIn(BaseModel):
     allowed_channel_id: str | None = None
     keep_running_on_close: bool | None = None
     autostart_bot: bool | None = None
+    start_with_windows: bool | None = None
     appearance: dict | None = None
 
 
@@ -145,7 +146,7 @@ def create_app(
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data: blob: https://cdn.discordapp.com; "
+            "img-src 'self' data: blob: https:; "
             f"connect-src 'self' ws://127.0.0.1:{port} ws://localhost:{port}; "
             "frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
         )
@@ -155,6 +156,22 @@ def create_app(
     @app.get("/api/ping")
     async def ping():
         return {"ok": True, "version": __version__, "build": BUILD}
+
+    @app.post("/api/app/restart")
+    async def restart_app():
+        """Opens a fresh app window on the newest code: a new launcher replaces this service and the old window."""
+        import subprocess
+        import sys
+
+        exe = Path(sys.executable)
+        pythonw = exe.with_name("pythonw.exe")
+        flags = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW) \
+            if sys.platform == "win32" else 0
+        subprocess.Popen([str(pythonw if pythonw.exists() else exe), str(UI_DIR.parent / "app.py"), "--restart"],
+                         cwd=str(UI_DIR.parent), creationflags=flags, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, close_fds=True)
+        log.info(tr("האפליקציה נפתחת מחדש…"))
+        return {"ok": True}
 
     @app.post("/api/shutdown")
     async def shutdown():
@@ -197,17 +214,42 @@ def create_app(
     # ---- settings & secrets ---------------------------------------------
     @app.get("/api/settings")
     async def get_settings():
+        from . import autostart
+
         return {
+            "start_with_windows": autostart.is_enabled(),
             "secrets": {name: secrets_store.describe(name) for name in secrets_store.NAMES},
             "settings": store.get_settings(),
         }
 
     @app.put("/api/settings")
     async def put_settings(body: SettingsIn):
+        old_lang = store.get_settings()["ui_lang"]
+        changes = body.model_dump(exclude_none=True)
+        if "start_with_windows" in changes:
+            from . import autostart
+
+            on = bool(changes.pop("start_with_windows"))
+            try:
+                autostart.set_enabled(on)
+            except (OSError, ValueError) as exc:
+                raise err(400, str(exc))
+            if on:  # starting with Windows only helps if the bot also connects by itself
+                changes["autostart_bot"] = True
+            log.info(tr("הפעלה עם Windows: %s"), "✓" if on else "✕")
         try:
-            store.update_settings(body.model_dump(exclude_none=True))
+            store.update_settings(changes)
         except ValueError as exc:
             raise err(400, str(exc))
+        if body.ui_lang and body.ui_lang != old_lang:
+            # one language for everything: the app, the bot's messages in every server and the slash commands
+            for g in store.list_guilds():
+                store.set_guild_lang(g["id"], body.ui_lang)
+            log.info(tr("השפה שונתה ל-%s באפליקציה ובכל השרתים"), i18n.LANGS[body.ui_lang]["name"])
+            managers = manager.managers() if hasattr(manager, "managers") else [manager]
+            for m in managers:
+                if m.bot is not None and m.state == "connected":
+                    asyncio.create_task(m.bot._sync_commands())
         return await get_settings()
 
     @app.put("/api/secrets/{name}")
@@ -394,8 +436,18 @@ def create_app(
             clean = catalog.validate_config(key, body.config, current)
         except ValueError as exc:
             raise err(400, str(exc))
-        store.set_config(gid, key, clean)
+        if key == "custom_commands":  # a slash custom command must not take the name of one of the bot's commands
+            from .bot import command_specs
+
+            custom = store.get_kv("command_custom", {}) or {}
+            taken = {(custom.get(c["name"]) or {}).get("name") or c["name"] for c in await command_specs(store)}
+            clash = [c["name"] for c in clean["commands"] if c["kind"] in ("slash", "both") and c["name"] in taken]
+            if clash:
+                raise err(400, tr("כבר יש לבוט פקודת סלאש בשם /{name}. בחר שם אחר.", name=clash[0]))
+        store.set_config(gid, key, catalog.strip_defaults(key, clean))
         log.info(tr("ההגדרות של %s עודכנו בשרת %s"), key, guild["name"])
+        if key == "custom_commands":
+            _resync_custom_commands(gid)
         return _guild_view(gid)
 
     def _rr_cog(gid: str = ""):
@@ -442,7 +494,16 @@ def create_app(
             raise err(404, tr("מודול לא מוכר"))
         guild = store.set_module(gid, key, body.enabled)
         log.info(tr("המודול %s הופעל בשרת %s") if body.enabled else tr("המודול %s כובה בשרת %s"), key, guild["name"])
+        if key == "custom_commands":  # slash custom commands appear / disappear with the module
+            _resync_custom_commands(gid)
         return _guild_view(gid)
+
+    def _resync_custom_commands(gid: str) -> None:
+        bot = manager.bot_for(gid) if hasattr(manager, "bot_for") else manager.bot
+        cog = bot.get_cog("CustomCommands") if bot is not None else None
+        live = manager.live_guild(gid)
+        if cog is not None and live is not None:
+            asyncio.create_task(cog.sync_guild(live))
 
     @app.delete("/api/guilds/{gid}")
     async def forget_guild(gid: str):
@@ -620,13 +681,36 @@ def create_app(
         if channel is None or not hasattr(channel, "send"):
             raise err(400, tr("בחר ערוץ ושמור"))
         try:
-            msg = await channel.send(embed=build_embed(cfg))
+            msg = await channel.send(content=(cfg.get("content") or "").strip()[:2000] or None, embed=build_embed(cfg),
+                                     allowed_mentions=discord.AllowedMentions(everyone=False, roles=True, users=True))
         except ValueError as exc:
             raise err(400, str(exc))
         except discord.HTTPException as exc:
             raise err(400, tr("דיסקורד דחה את ההודעה: {error}", error=exc.text or exc.status))
         log.info(tr("נשלחה הודעת Embed ל-#%s בשרת %s"), channel.name, guild.name)
         return {"ok": True, "url": msg.jump_url}
+
+    class ChannelIn(BaseModel):
+        name: str
+        kind: str = "text"
+
+    @app.post("/api/guilds/{gid}/channels")
+    async def create_channel(gid: str, body: ChannelIn):
+        guild = _live(gid)
+        name = body.name.strip()[:100]
+        if not name:
+            raise err(400, tr("צריך שם לערוץ"))
+        if not guild.me.guild_permissions.manage_channels:
+            raise err(403, tr("לבוט אין הרשאת 'ניהול ערוצים' בשרת הזה"))
+        try:
+            if body.kind == "voice":
+                ch = await guild.create_voice_channel(name, reason="created from the app")
+            else:
+                ch = await guild.create_text_channel(name, reason="created from the app")
+        except discord.HTTPException as exc:
+            raise err(400, tr("דיסקורד דחה את הבקשה: {message}", message=exc.text or exc.status))
+        log.info(tr("נוצר ערוץ %s בשרת %s"), ch.name, guild.name)
+        return {"id": str(ch.id), "name": ch.name}
 
     @app.post("/api/guilds/{gid}/ticket-panel")
     async def ticket_panel(gid: str):

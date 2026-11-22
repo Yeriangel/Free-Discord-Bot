@@ -197,12 +197,13 @@ MODULES = [
     # ================= SERVER MANAGEMENT =================
     {
         "key": "custom_commands", "category": "server_management", "label": "פקודות מותאמות",
-        "description": "פקודות טקסט עם תשובה שאתה כותב. פקודה יכולה גם לתת או להוריד תפקיד.",
+        "description": "פקודות משלך, כפקודות סלאש (/type) או טקסט (!type): תשובה עם משתנים, מספר אקראי, מחיקת ההודעה ותפקידים.",
         "permissions": ["manage_roles"], "intents": ["message_content"], "status": "ready", "commands": [],
         "fields": [
             _f("prefix", "text", "קידומת", "!", max=5),
             _f("commands", "commands", "פקודות", [],
-               hint="בתשובה אפשר להשתמש ב-{user}, {username}, {server}, {channel}"),
+               hint="משתנים בתשובה: {args} כל מה שנכתב אחרי הפקודה · {arg1} המילה הראשונה · {random} מספר אקראי בין שני המספרים שנכתבו "
+                    "(למשל 1 to 1000) · {random:1-6} · {choose:כן|לא} · {user} · {username} · {server} · {channel}"),
         ],
     },
     {

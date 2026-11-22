@@ -61,6 +61,20 @@ def module_defaults(key: str, lang: str = "he") -> dict:
     return out
 
 
+def strip_defaults(key: str, raw: dict | None) -> dict:
+    """Drops saved texts that are just a default message (in any language), so they follow the bot's language.
+    Texts the user wrote themselves are kept."""
+    from .i18n import LANGS
+
+    raw = dict(raw or {})
+    for f in MODULES_BY_KEY[key]["fields"]:
+        default = f.get("default")
+        if f["type"] in ("text", "textarea") and isinstance(default, str) and default and f["key"] in raw:
+            if str(raw[f["key"]]).strip() in {tr(default, lang).strip() for lang in LANGS}:
+                del raw[f["key"]]
+    return raw
+
+
 def merged_config(key: str, raw: dict | None, lang: str = "he") -> dict:
     """Stored config on top of defaults (unknown keys dropped). Text defaults follow the server's bot language."""
     config = module_defaults(key, lang)
@@ -140,8 +154,16 @@ def _validate_field(field: dict, value):
                 raise ValueError(tr("פעולת תפקיד לא חוקית בפקודה '{name}'", name=name))
             if role_action != "none" and not role_id:
                 raise ValueError(tr("בפקודה '{name}' נבחרה פעולת תפקיד בלי תפקיד", name=name))
+            kind = item.get("kind") or "prefix"
+            send_mode = item.get("send_mode") or "channel"
+            if kind not in ("prefix", "slash", "both") or send_mode not in ("channel", "reply", "dm"):
+                raise ValueError(tr("אפשרות לא חוקית בפקודה '{name}'", name=name))
+            desc = str(item.get("description") or "").strip()[:100]
+            hint = str(item.get("arg_hint") or "").strip()[:100]
             seen.add(name)
-            out.append({"name": name, "response": response, "role_id": role_id, "role_action": role_action})
+            out.append({"name": name, "response": response, "role_id": role_id, "role_action": role_action, "kind": kind,
+                        "send_mode": send_mode, "delete_trigger": bool(item.get("delete_trigger")),
+                        "description": desc, "arg_hint": hint})
         if len(out) > 100:
             raise ValueError(tr("עד 100 פקודות"))
         return out

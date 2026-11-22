@@ -37,9 +37,9 @@ You can also just **reply** to the bot instead of mentioning it every time.
 | Category | Modules |
 |---|---|
 | Essentials | Welcome & Goodbye (text or embed), Auto Role, Reaction Roles, AutoMod (10 rules, each with its own action), Warnings with automatic escalation, Restricted Channels, Moderation commands with confirm buttons, Audit Log, Levels (XP, role rewards, `/rank`, `/levels`), Starboard |
-| Server Management | Custom Commands (can give or remove roles), Invite Tracker, Tickets (private threads), Suggestion Box |
+| Server Management | Custom Commands like MEE6 (real slash commands or `!text`, variables like `{args}`, `{random}`, `{choose:a\|b}`, delete the trigger message, give or remove roles), Invite Tracker, Tickets (private threads), Suggestion Box |
 | Automations | WHEN someone… IF… DO…: 11 events, 20 conditions, 12 actions, buttons, retry on failure |
-| Utilities | Polls (Discord's own), Embed Messages, Reminders (repeating + `/remind`), Statistics Channels, Temporary Voice Channels, AFK |
+| Utilities | Polls (Discord's own), Embed Message builder with live preview and **Publish**, Reminders (repeating + `/remind`), Statistics Channels, Temporary Voice Channels, AFK |
 | Social Alerts | YouTube, Twitch, Reddit and any RSS feed (TikTok and X have no free API, so they are not supported) |
 | Games & Fun | Economy (currency, `/daily` streaks, dice, guess, roulette, rock-paper-scissors, shop, boosts), Giveaways, Birthdays |
 | AI | Chat with **Claude** (Haiku / Sonnet / Opus), **ChatGPT** (GPT-6 Luna / Terra / Sol / Astra) or **Grok** (4.3 / 4.7), all with the same powers: server actions with confirmation, saves birthdays / reminders / giveaways / polls you mention (after you confirm) |

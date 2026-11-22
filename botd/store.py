@@ -14,7 +14,7 @@ from .store_features import FeatureStoreMixin
 DEFAULT_SETTINGS = {
     "allowed_user_id": "",
     "allowed_channel_id": "",
-    "keep_running_on_close": False,
+    "keep_running_on_close": True,
     "autostart_bot": False,
     "ui_lang": "he",
     "presence": {"status": "online", "activity": "none", "text": "", "url": ""},
@@ -255,7 +255,14 @@ class Store(FeatureStoreMixin):
         return Lang(self.guild_lang(gid), custom["texts"], custom["colors"], custom["emojis"])
 
     def set_guild_lang(self, gid: str, lang: str) -> dict:
-        server = dict(((self.get_guild(gid) or {}).get("config", {}).get("_server") or {}))
+        from .catalog import MODULE_KEYS, strip_defaults
+
+        config = (self.get_guild(gid) or {}).get("config", {})
+        for key in [k for k in config if k in MODULE_KEYS]:  # default messages follow the new language
+            cleaned = strip_defaults(key, config[key])
+            if cleaned != config[key]:
+                self.set_config(gid, key, cleaned)
+        server = dict((config.get("_server") or {}))
         server["language"] = lang
         return self.set_config(gid, "_server", server)
 

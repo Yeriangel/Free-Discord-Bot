@@ -370,6 +370,86 @@ def test_bot_accounts_and_server_profile():
     print("ok several bot accounts: who runs each server, no double answers; per-server bot profile")
 
 
+def test_custom_commands_v2_embed_language_autostart():
+    import os
+
+    from botd import autostart, catalog
+    from botd.modules.custom_commands import CustomCommands, command_args, match_command, render
+    from botd.modules.embeds import build_embed
+
+    # responses with variables
+    assert render("{args}", "Hello world") == "Hello world"
+    for _ in range(50):
+        n = int(render("{random}", "1 to 1000"))
+        assert 1 <= n <= 1000
+        assert 3 <= int(render("{random:3-5}")) <= 5
+        assert render("{choose:a|b}") in ("a", "b")
+    assert render("{arg2} {arg1} {arg9}", "x y") == "y x "
+    assert render("{random}", "50 10") in {str(i) for i in range(10, 51)}  # order does not matter
+    assert render("{__class__}", "x") == "{__class__}"                        # no access to Python objects
+    cmds = catalog.validate_config("custom_commands", {"commands": [
+        {"name": "type", "response": "{args}", "kind": "slash", "delete_trigger": True, "send_mode": "channel",
+         "description": "Bot writes your message", "arg_hint": "text"},
+        {"name": "rules", "response": "Be nice"}]})["commands"]
+    assert cmds[0]["kind"] == "slash" and cmds[0]["delete_trigger"] is True and cmds[1]["kind"] == "prefix"
+    assert match_command("!type hi", "!", cmds) is None            # slash-only commands do not react to text
+    assert match_command("!rules", "!", cmds)["name"] == "rules" and command_args("!type Hello  world", "!") == "Hello  world"
+    try:
+        catalog.validate_config("custom_commands", {"commands": [{"name": "x", "response": "y", "kind": "nope"}]})
+        raise AssertionError("bad kind accepted")
+    except ValueError:
+        pass
+
+    async def text_command_deletes_trigger():
+        store, bot = make_env()
+        store.set_module(GID, "custom_commands", True)
+        store.set_config(GID, "custom_commands", catalog.validate_config("custom_commands", {"prefix": "/", "commands": [
+            {"name": "type", "response": "{args}", "kind": "prefix", "delete_trigger": True}]}))
+        cog = CustomCommands(bot)
+        msg = MagicMock(spec=discord.Message)
+        msg.guild = SimpleNamespace(id=int(GID), name="Test", member_count=3)
+        msg.author = MagicMock(bot=False, mention="<@1>", display_name="Dana", joined_at=None)
+        msg.content, msg.delete = "/type Hello world", AsyncMock()
+        msg.channel = MagicMock(mention="<#5>")
+        msg.channel.send = AsyncMock()
+        await cog.on_message(msg)
+        assert msg.delete.await_count == 1 and msg.channel.send.await_args.args[0] == "Hello world"
+        store.close()
+    asyncio.run(text_command_deletes_trigger())
+
+    # embed builder: author, fields, timestamp
+    e = build_embed({"title": "Rules", "url": "https://x.y", "description": "Be **nice**", "color": "#112233", "author_name": "Staff",
+                     "author_icon": "https://x/a.png", "fields": [{"name": "1", "value": "No spam", "inline": True}], "timestamp": True})
+    assert e.author.name == "Staff" and e.fields[0].inline and e.timestamp is not None and e.url == "https://x.y"
+
+    # one language everywhere: saved default texts follow the new language, own texts stay
+    store, _ = make_env()
+    d = catalog.module_defaults("welcome")
+    store.set_config(GID, "welcome", catalog.strip_defaults("welcome", {**d, "channel_id": "333333333333333333"}))
+    assert "welcome_message" not in store.raw_config(GID, "welcome")
+    store.set_config(GID, "welcome", {"welcome_message": "My text", "leave_message": d["leave_message"]})
+    store.set_guild_lang(GID, "en")
+    assert store.raw_config(GID, "welcome") == {"welcome_message": "My text"}
+    assert catalog.merged_config("welcome", store.raw_config(GID, "welcome"), "en")["leave_message"].endswith("left the server after {duration}.")
+    assert store.get_settings()["keep_running_on_close"] is True   # keeps running in the background by default
+    store.close()
+
+    # start with Windows: a small script in the (here: temporary) Startup folder
+    old = os.environ.get("APPDATA")
+    os.environ["APPDATA"] = tempfile.mkdtemp()
+    try:
+        assert not autostart.is_enabled()
+        autostart.set_enabled(True)
+        text = autostart.script_path().read_text(encoding="utf-8")
+        assert autostart.is_enabled() and "-m botd" in text and "CurrentDirectory" in text
+        autostart.set_enabled(False)
+        assert not autostart.is_enabled()
+    finally:
+        if old is not None:
+            os.environ["APPDATA"] = old
+    print("ok custom commands v2 (variables, slash/text, delete my message), embed builder, one language, start with Windows")
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

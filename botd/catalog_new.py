@@ -60,12 +60,22 @@ NEW_MODULES = {m["key"]: m for m in [
 
     _m("embed_messages", "utilities", "הודעות Embed", "הודעות מעוצבות עם צבעים ותמונות, נשלחות מהאפליקציה", [
         _f("channel_id", "channel", "ערוץ", ""),
+        _f("content", "textarea", "טקסט מעל ה-Embed (לא חובה)", "", hint="למשל תיוג של תפקיד. אפשר Markdown של דיסקורד"),
+        _f("author_name", "text", "שם כותב (לא חובה)", "", max=256),
+        _f("author_icon", "text", "תמונת כותב (קישור, לא חובה)", "", max=500),
         _f("title", "text", "כותרת", "", max=256),
+        _f("url", "text", "קישור בכותרת (לא חובה)", "", max=500),
         _f("description", "textarea", "תוכן", "", hint="אפשר Markdown של דיסקורד"),
         _f("color", "text", "צבע", "#6D5DFC", max=7, hint="בפורמט ‎#RRGGBB"),
+        _f("fields", "list", "שדות", [], max_items=25, item_fields=[
+            _f("name", "text", "כותרת השדה", "", required=True, max=256),
+            _f("value", "text", "תוכן השדה", "", required=True, max=1024),
+            _f("inline", "bool", "באותה שורה", False),
+        ]),
         _f("image_url", "text", "קישור לתמונה גדולה (לא חובה)", "", max=500),
         _f("thumbnail_url", "text", "קישור לתמונה קטנה (לא חובה)", "", max=500),
         _f("footer", "text", "שורה תחתונה (לא חובה)", "", max=200),
+        _f("timestamp", "bool", "להוסיף תאריך ושעה", False),
     ], permissions=["embed_links"]),
 
     _m("reminders", "utilities", "תזכורות", "הודעות חוזרות כל כמה דקות או שעות, ותזכורות אישיות", [
