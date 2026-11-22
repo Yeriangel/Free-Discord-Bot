@@ -16,10 +16,6 @@ from .store import Store
 
 log = logging.getLogger("botd.bot")
 
-# Application flags that say a privileged intent is switched on in the Developer Portal
-FLAG_MEMBERS = (1 << 14) | (1 << 15)
-FLAG_MESSAGE_CONTENT = (1 << 18) | (1 << 19)
-
 NO_PINGS = discord.AllowedMentions.none()
 USER_PINGS = discord.AllowedMentions(everyone=False, roles=False, users=True, replied_user=False)
 
@@ -89,7 +85,14 @@ class ManagedBot(commands.Bot):
         from .i18n import ui_lang
 
         lang = ui_lang()
-        for cmd in self.tree.get_commands():
+
+        def walk(cmds):
+            for c in cmds:
+                yield c
+                if isinstance(c, discord.app_commands.Group):
+                    yield from walk(c.commands)
+
+        for cmd in walk(self.tree.get_commands()):
             src = cmd.extras.setdefault("src_description", _plain(cmd.description))
             cmd.description = tr(src, lang)[:100]
             for param in getattr(cmd, "_params", {}).values():
@@ -153,6 +156,7 @@ class BotManager:
         self.error = ""
         self.started_at: float | None = None
         self.intents: dict | None = None
+        self.app_id = ""
         self._lock = asyncio.Lock()
 
     # ---- status ----------------------------------------------------------
@@ -176,6 +180,7 @@ class BotManager:
             "latency_ms": latency,
             "started_at": self.started_at,
             "intents": self.intents,
+            "app_id": self.app_id,
         }
 
     def _publish_status(self) -> None:
@@ -212,6 +217,10 @@ class BotManager:
             "text_channels": [
                 {"id": str(c.id), "name": c.name, "category": c.category.name if c.category else ""}
                 for c in guild.text_channels
+            ],
+            "voice_channels": [
+                {"id": str(c.id), "name": c.name, "category": c.category.name if c.category else ""}
+                for c in guild.voice_channels
             ],
             "roles": [
                 {"id": str(r.id), "name": r.name, "assignable": me is not None and r < me.top_role}
@@ -253,8 +262,8 @@ class BotManager:
             app = await discord_rest.get_application(token)
         except discord_rest.DiscordAPIError:
             return {"members": False, "message_content": False}
-        flags = int(app.get("flags") or 0)
-        found = {"members": bool(flags & FLAG_MEMBERS), "message_content": bool(flags & FLAG_MESSAGE_CONTENT)}
+        self.app_id = str(app.get("id") or "")
+        found = discord_rest.intents_from_flags(int(app.get("flags") or 0))
         missing = [catalog.INTENT_LABELS[k] for k, v in found.items() if not v]
         if missing:
             log.warning(tr("ב-Developer Portal כבויים: %s. מודולים שצריכים אותם לא יעבדו."), ", ".join(missing))
@@ -296,6 +305,22 @@ class BotManager:
                 log.info(tr("הבוט כבוי"))
             self.started_at = None
             self._set_state("error" if error else "stopped", error)
+
+    async def enable_intents(self) -> dict:
+        """Turns the privileged intents on in the Developer Portal (via the API) and reconnects the bot."""
+        token = secrets_store.get("bot_token")
+        if not token:
+            raise ValueError(tr("לא הוגדר Bot Token. הוסף אותו בעמוד 'חיבור והגדרות'."))
+        found = await discord_rest.enable_intents(token)
+        log.info(tr("Intents הופעלו: Server Members %s, Message Content %s"),
+                 "✓" if found["members"] else "✕", "✓" if found["message_content"] else "✕")
+        if self.task is not None and not self.task.done():
+            await self.stop()
+            await self.start()
+        else:
+            self.intents = found
+            self._publish_status()
+        return found
 
     async def stop(self) -> None:
         async with self._lock:

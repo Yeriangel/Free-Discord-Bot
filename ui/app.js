@@ -23,7 +23,7 @@ const GENERAL_NAV = [
   { page: "permissions", icon: "🛡", label: "הרשאות והזמנה" },
   { page: "updates", icon: "⟳", label: "עדכונים" },
 ];
-const CAT_ICONS = { essentials: "⭐", server_management: "🛠", utilities: "🧰", social: "📣", games: "🎮", ai: "✦" };
+const CAT_ICONS = { essentials: "⭐", server_management: "🛠", automations: "⚡", utilities: "🧰", social: "📣", games: "🎮", ai: "✦" };
 const NONE_IMG = "data:image/gif;base64,R0lGODlhAQABAAAAACw=";
 
 const S = {
@@ -331,7 +331,9 @@ function renderNav() {
        </button>`).join("");
 }
 
+const SINGLE_MODULE_CATS = { automations: "automations" };
 async function go(page) {
+  if (page.startsWith("cat:") && SINGLE_MODULE_CATS[page.slice(4)]) page = "mod:" + SINGLE_MODULE_CATS[page.slice(4)];
   if (S.dirty && page !== S.page) {
     if (!(await confirmDialog("יש שינויים שלא נשמרו", "לצאת מהדף בלי לשמור? השינויים יאבדו.", "צא בלי לשמור"))) return;
   }
@@ -463,6 +465,11 @@ function viewConnection() {
     </div>
     ${secretField("bot_token", "Bot Token", t('מ-<a href="https://discord.com/developers/applications" target="_blank">Developer Portal</a>, בלשונית Bot, לוחצים Reset Token.'))}
     ${secretField("anthropic_key", "Anthropic API Key", t('מ-<a href="https://console.anthropic.com/settings/keys" target="_blank">Anthropic Console</a>. משמש לצ\'אט עם Claude.'))}
+    <details class="card section"><summary><b>${esc(t("Twitch (לא חובה, להתראות רשתות)"))}</b></summary>
+      <p class="desc" style="margin:10px 0">${t('יוצרים אפליקציה חינמית ב-<a href="https://dev.twitch.tv/console/apps" target="_blank">Twitch Developer Console</a> (OAuth Redirect: http://localhost) ומעתיקים את ה-Client ID וה-Client Secret.')}</p>
+      ${secretField("twitch_client_id", "Twitch Client ID", "")}
+      ${secretField("twitch_client_secret", "Twitch Client Secret", "")}
+    </details>
     <div class="card section">
       <h3>מי מורשה לדבר עם הבוט</h3>
       <p class="desc" style="margin-bottom:14px">לחיצה ימנית על המשתמש או על הערוץ בדיסקורד, ואז "העתק מזהה". צריך להפעיל קודם מצב מפתחים בהגדרות דיסקורד, תחת מתקדם.</p>
@@ -619,7 +626,7 @@ function viewPermissions() {
       <span>${esc(p.label)}</span>
       ${p.key === "administrator" ? `<span class="badge badge-danger">מסוכן</span>` : ""}
     </label>`).join("");
-  const guildOpts = [`<option value="">אבחר בדיסקורד</option>`]
+  const guildOpts = [`<option value="">${esc(t("אבחר בדיסקורד"))}</option>`]
     .concat(S.guilds.map((g) => `<option value="${esc(g.id)}">${esc(g.name)}</option>`)).join("");
   return `
     <div class="notice">${t("בוט לא יכול לתת לעצמו הרשאות. האפליקציה רק יוצרת קישור הזמנה: אתה פותח אותו, בוחר שרת ולוחץ <b>Authorize</b> בדיסקורד. ברירת המחדל היא ההרשאות המינימליות שהמודולים הפעילים צריכים. ככה גם מוסיפים את הבוט לשרת חדש.")}</div>
@@ -647,10 +654,11 @@ function viewPermissions() {
 }
 
 /* ===== pickers & field renderers ===== */
-function channelPicker(attrs, value, objects, emptyLabel = "ללא") {
+function channelPicker(attrs, value, objects, emptyLabel = "ללא", list = "text_channels") {
   if (!objects) return `<input type="text" class="ltr" ${attrs} value="${esc(value)}" placeholder="מזהה ערוץ (הפעל את הבוט כדי לבחור מרשימה)">`;
-  const opts = [`<option value="">${esc(emptyLabel)}</option>`].concat(objects.text_channels.map((c) =>
-    `<option value="${esc(c.id)}" ${c.id === value ? "selected" : ""}># ${esc(c.name)}${c.category ? ` · ${esc(c.category)}` : ""}</option>`));
+  const icon = list === "voice_channels" ? "🔊 " : "# ";
+  const opts = [`<option value="">${esc(emptyLabel)}</option>`].concat((objects[list] || []).map((c) =>
+    `<option value="${esc(c.id)}" ${c.id === value ? "selected" : ""} class="no-translate">${icon}${esc(c.name)}${c.category ? ` · ${esc(c.category)}` : ""}</option>`));
   return `<select ${attrs}>${opts.join("")}</select>`;
 }
 
@@ -677,6 +685,7 @@ function simpleInput(f, value, attrs, o) {
     case "date": return `<input type="date" class="ltr" ${attrs} value="${esc(value)}">`;
     case "select": return `<select ${attrs}>${f.options.map(([v, l]) => `<option value="${esc(v)}" ${v === value ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
     case "channel": return channelPicker(attrs, value, o);
+    case "voice_channel": return channelPicker(attrs, value, o, "ללא", "voice_channels");
     case "role": return rolePicker(attrs, value, o);
     case "lines": return `<textarea ${attrs} rows="3">${esc((value || []).join("\n"))}</textarea>`;
     case "textarea": return `<textarea ${attrs}>${esc(value)}</textarea>`;
@@ -988,7 +997,7 @@ function moduleWarnings(m, g) {
   const intents = S.status.intents;
   if (intents && m.intents.length) {
     const missing = m.intents.filter((i) => !intents[i]);
-    if (missing.length) out.push({ badge: "חסר Intent", text: `צריך להפעיל ${missing.map((i) => S.catalog.intent_labels[i]).join(" ו-")} ב-Developer Portal (לשונית Bot), ואז לכבות ולהפעיל את הבוט.` });
+    if (missing.length) out.push({ intent: true, badge: "חסר Intent", text: t("צריך להפעיל {list}. לחץ 'הפעל אוטומטית' למעלה.", { list: missing.map((i) => S.catalog.intent_labels[i]).join(" + ") }) });
   }
   if (g && g.objects && m.permissions.length) {
     const have = new Set(g.objects.bot_permissions);
@@ -996,6 +1005,17 @@ function moduleWarnings(m, g) {
     if (missing.length) out.push({ badge: "חסרות הרשאות", text: `לבוט חסרות בשרת הזה ההרשאות: ${missing.map(permLabel).join(", ")}. צור קישור הזמנה חדש בעמוד 'הרשאות והזמנה'.` });
   }
   return out;
+}
+
+function intentBanner(mods) {
+  const intents = S.status.intents;
+  if (!intents || !S.catalog) return "";
+  const missing = [...new Set(mods.flatMap((m) => m.intents).filter((i) => !intents[i]))];
+  if (!missing.length) return "";
+  const list = missing.map((i) => S.catalog.intent_labels[i]).join(" + ");
+  const portal = S.status.app_id ? `<a class="btn btn-sm btn-ghost" href="https://discord.com/developers/applications/${esc(S.status.app_id)}/bot" target="_blank" rel="noopener">${esc(t("פתח Developer Portal"))}</a>` : "";
+  return `<div class="notice warn row"><span class="grow">${esc(t("לחלק מהמודולים חסר {list}. אפשר להפעיל אוטומטית בלחיצה (הבוט יתחבר מחדש), או ידנית ב-Developer Portal, בלשונית Bot.", { list }))}</span>
+    <button class="btn btn-sm btn-primary" data-action="enable-intents">${esc(t("הפעל אוטומטית"))}</button>${portal}</div>`;
 }
 
 function moduleToggle(m, g) {
@@ -1041,6 +1061,7 @@ function viewCategory(catKey) {
       ${guildLangSelect()}
       ${g.present === false || !g.objects ? `<button class="btn btn-sm btn-ghost" data-action="forget-guild">הסר פרופיל שרת</button>` : ""}
     </div>
+    ${intentBanner(S.catalog.modules.filter((m) => m.category === catKey && m.status !== "soon"))}
     <div class="grid grid-cards">${cards}</div>`;
 }
 
@@ -1069,15 +1090,70 @@ function viewModulePage(key) {
       ${m.commands.length ? `<div class="row" style="margin-top:12px"><span class="label">פקודות:</span>${m.commands.map((c) => `<span class="badge ltr">${esc(c)}</span>`).join("")}</div>` : ""}
       ${m.permissions.length ? `<div class="row" style="margin-top:8px"><span class="label">הרשאות שהבוט צריך:</span>${m.permissions.map((p) => `<span class="badge">${esc(permLabel(p))}</span>`).join("")}</div>` : ""}
     </div>
-    ${warns.map((w) => `<div class="notice warn">${esc(w.text)}</div>`).join("")}
+    ${intentBanner([m])}
+    ${warns.filter((w) => !w.intent).map((w) => `<div class="notice warn">${esc(w.text)}</div>`).join("")}
     ${key === "claude_chat" ? viewClaudeStatus() : ""}
     ${soon}${fields}
     ${key === "economy" ? `<div class="card section"><div class="row"><h3>💰 העשירים בשרת</h3><div class="spacer"></div><button class="btn btn-sm" data-action="eco-reload">רענן</button></div><div id="eco-list" class="muted small" style="margin-top:10px">טוען…</div></div>` : ""}
     ${key === "levels" ? `<div class="card section"><div class="row"><h3>🏆 לוח המובילים</h3><div class="spacer"></div><button class="btn btn-sm" data-action="levels-reload">רענן</button></div><div id="lb-list" class="muted small" style="margin-top:10px">טוען…</div></div>` : ""}
+    ${moduleExtras(key)}
     ${key === "warnings" ? `<div class="card section"><div class="row"><h3>אזהרות אחרונות בשרת</h3><div class="spacer"></div><button class="btn btn-sm" data-action="warnings-reload">רענן</button></div><div id="warn-list" class="muted small" style="margin-top:10px">טוען…</div></div>` : ""}`;
 }
 
+/* ===== extras for the newer modules: buttons and data tables ===== */
+const fmtDate = (ts) => new Date(ts * 1000).toLocaleString(I18N.lang === "he" ? "he-IL" : I18N.lang);
+const userCell = (id, name) => `<td class="no-translate">${esc(name || id)}${id ? `<div class="muted small ltr">${esc(id)}</div>` : ""}</td>`;
+const EXTRA_TABLES = {
+  birthdays: { title: "🎂 ימי הולדת רשומים", url: "birthdays", empty: "עוד לא נרשמו ימי הולדת.",
+    head: ["משתמש", "תאריך", ""],
+    row: (r) => `<tr>${userCell(r.user_id, r.user_name)}<td class="ltr">${String(r.day).padStart(2, "0")}/${String(r.month).padStart(2, "0")}${r.year ? "/" + r.year : ""}</td>
+      <td><button class="btn btn-sm btn-ghost" data-action="bday-delete" data-bid="${r.id}">מחק</button></td></tr>` },
+  giveaways: { title: "🎉 הגרלות", url: "giveaways", empty: "עוד אין הגרלות. מתחילים עם ‎/giveaway start בדיסקורד.",
+    head: ["#", "פרס", "מסתיים", "משתתפים", "סטטוס"],
+    row: (r) => `<tr><td>${r.id}</td><td class="no-translate">${esc(r.prize)}</td><td class="small">${fmtDate(r.ends)}</td><td>${r.entries}</td>
+      <td>${r.ended ? `<span class="badge">${esc(t("הסתיימה"))}</span>` : `<span class="badge badge-ok">${esc(t("פעילה"))}</span>`}</td></tr>` },
+  invite_tracker: { title: "🏆 המזמינים המובילים", url: "invites", empty: "עוד אין הזמנות במעקב.",
+    head: ["משתמש", "הצטרפו", "עזבו", "סה\"כ"],
+    row: (r) => `<tr>${userCell(r.user_id, r.user_name)}<td>${r.joins}</td><td>${r.leaves}</td><td><b>${r.total}</b></td></tr>` },
+  ticketing: { title: "🎫 כרטיסים", url: "tickets", empty: "עוד לא נפתחו כרטיסים.",
+    head: ["#", "פתח", "נפתח", "סטטוס"],
+    row: (r) => `<tr><td>${r.number}</td>${userCell(r.user_id, r.user_name)}<td class="small">${fmtDate(r.created)}</td>
+      <td>${r.closed ? `<span class="badge">${esc(t("נסגר"))}</span>` : `<span class="badge badge-ok">${esc(t("פתוח"))}</span>`}</td></tr>` },
+  suggestions: { title: "💡 הצעות אחרונות", url: "suggestions", empty: "עוד אין הצעות.",
+    head: ["#", "הצעה", "מציע", "סטטוס"],
+    row: (r) => `<tr><td>${r.number}</td><td class="no-translate">${esc(r.text.slice(0, 120))}</td>${userCell(r.user_id, r.user_name)}<td>${esc(r.status)}</td></tr>` },
+};
+
+function moduleExtras(key) {
+  let out = "";
+  if (key === "embed_messages") out += `<div class="card section row"><span class="grow muted">${esc(t("שמור קודם, ואז שלח. ההודעה נשלחת לערוץ שבחרת."))}</span>
+    <button class="btn btn-primary" data-action="embed-send">${esc(t("שלח לדיסקורד"))}</button></div>`;
+  if (key === "ticketing") out += `<div class="card section row"><span class="grow muted">${esc(t("אחרי השמירה, פרסם את ההודעה עם הכפתור בערוץ שבחרת."))}</span>
+    <button class="btn btn-primary" data-action="ticket-panel">${esc(t("פרסם כפתור"))}</button></div>`;
+  if (key === "social_alerts") out += `<div class="notice">${esc(t("TikTok ו-X (טוויטר) לא נתמכים: אין להם API או פיד חינמי. בפעם הראשונה הבוט רק זוכר מה כבר קיים, ומתריע רק על תוכן חדש."))}</div>`;
+  if (key === "birthdays") out += `<div class="card section"><h3>${esc(t("הוספת יום הולדת"))}</h3>
+    <div class="row" style="margin-top:10px;flex-wrap:wrap">
+      <input type="text" id="bday-name" placeholder="${esc(t("שם או מזהה משתמש"))}" style="max-width:240px">
+      <input type="text" id="bday-date" class="ltr" placeholder="24/12" style="max-width:140px">
+      <button class="btn btn-primary" data-action="bday-add">${esc(t("הוסף"))}</button></div></div>`;
+  const tbl = EXTRA_TABLES[key];
+  if (tbl) out += `<div class="card section"><div class="row"><h3>${esc(t(tbl.title))}</h3><div class="spacer"></div>
+    <button class="btn btn-sm" data-action="extra-reload">${esc(t("רענן"))}</button></div><div id="extra-list" class="muted small" style="margin-top:10px">${esc(t("טוען…"))}</div></div>`;
+  return out;
+}
+
+async function loadExtraTable(key) {
+  const tbl = EXTRA_TABLES[key], box = $("#extra-list");
+  if (!tbl || !box || !S.guildId) return;
+  let rows;
+  try { rows = await api("GET", `/guilds/${S.guildId}/${tbl.url}`); } catch (e) { box.textContent = errMessage(e); return; }
+  if (!rows.length) { box.textContent = t(tbl.empty); return; }
+  box.classList.remove("muted", "small");
+  box.innerHTML = `<table class="table"><thead><tr>${tbl.head.map((h) => `<th>${esc(t(h))}</th>`).join("")}</tr></thead><tbody>${rows.map(tbl.row).join("")}</tbody></table>`;
+}
+
 function afterModuleRender(key) {
+  loadExtraTable(key);
   if (key === "levels") loadLeaderboard();
   if (key === "economy") loadRichList();
   if (key === "warnings") loadWarnings();
@@ -1307,6 +1383,36 @@ const actions = {
   "discard-banner"() { S.bannerDraft = null; render(); },
   "perm-recommended"() { S.permSel = new Set(S.catalog.recommended_permissions); render(); },
   "perm-none"() { S.permSel = new Set(); render(); },
+  "extra-reload"() { loadExtraTable(S.page.slice(4)); },
+  async "embed-send"(btn) {
+    if (S.dirty) { toast("שמור קודם את השינויים", "error"); return; }
+    await guarded(btn, async () => { await api("POST", `/guilds/${S.guildId}/embed/send`); toast("ההודעה נשלחה", "ok"); });
+  },
+  async "ticket-panel"(btn) {
+    if (S.dirty) { toast("שמור קודם את השינויים", "error"); return; }
+    await guarded(btn, async () => { await api("POST", `/guilds/${S.guildId}/ticket-panel`); toast("הכפתור פורסם", "ok"); });
+  },
+  async "bday-add"(btn) {
+    const who = $("#bday-name").value.trim(), date = $("#bday-date").value.trim();
+    if (!who || !date) { toast("צריך שם ותאריך", "error"); return; }
+    const body = /^\d{15,21}$/.test(who) ? { user_id: who, date } : { name: who, date };
+    await guarded(btn, async () => {
+      await api("POST", `/guilds/${S.guildId}/birthdays`, body);
+      $("#bday-name").value = ""; $("#bday-date").value = "";
+      loadExtraTable("birthdays");
+      toast("נשמר", "ok");
+    });
+  },
+  async "bday-delete"(btn) {
+    await guarded(btn, async () => { await api("DELETE", `/guilds/${S.guildId}/birthdays/${btn.dataset.bid}`); loadExtraTable("birthdays"); });
+  },
+  async "enable-intents"(btn) {
+    await guarded(btn, async () => {
+      onStatus(await api("POST", "/intents/enable"));
+      render();
+      toast("ה-Intents הופעלו. הבוט מתחבר מחדש.", "ok");
+    });
+  },
   async "make-invite"(btn) {
     await guarded(btn, async () => {
       S.invite = await api("POST", "/invite", { permissions: [...S.permSel], guild_id: $("#invite-guild").value });

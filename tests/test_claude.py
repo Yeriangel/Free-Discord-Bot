@@ -109,7 +109,7 @@ async def scenario(store):
     assert r["path"] == "/v1/messages", r["path"]
     assert r["body"]["model"] == "claude-haiku-5-5"
     assert r["body"]["output_config"] == {"effort": "low"}
-    assert r["body"]["system"] == "SYS" and r["body"]["messages"] == [{"role": "user", "content": "קוראים לי דני"}]
+    assert r["body"]["system"].startswith("SYS") and "same language" in r["body"]["system"] and r["body"]["messages"] == [{"role": "user", "content": "קוראים לי דני"}]
     assert "thinking" not in r["body"] and "sk-ant-test-key-000000" in (r["headers"].get("x-api-key", "") + r["headers"].get("authorization", ""))
     assert m1.reply.await_args.args[0] == "שלום! איך אפשר לעזור?"
     assert m1.reply.await_args.kwargs["allowed_mentions"].everyone is False
@@ -201,6 +201,23 @@ async def scenario(store):
     p = claude_actions.plan(guild, author, "timeout_member", {"user": "<@77>", "minutes": 5}, "en")
     assert p.error == "You don't have permission to do this."
     print("ok claude server actions: plan, confirm, permission check")
+
+    # "who talked the most?" -> read tool answered by the bot, then Claude writes the answer
+    guild.id = 111111111111111111
+    store.count_message(str(guild.id), "77", "User12345")
+    NEXT.append((200, {"id": "msg_3", "type": "message", "role": "assistant", "model": "claude-haiku-5-5",
+                       "content": [{"type": "tool_use", "id": "toolu_2", "name": "top_members", "input": {"limit": 5}}],
+                       "stop_reason": "tool_use", "stop_sequence": None, "usage": {"input_tokens": 40, "output_tokens": 10}}))
+    NEXT.append(msg("User12345 talked the most (1 message)."))
+    m8 = fake_message("who talked the most on this server?")
+    m8.guild, m8.author = guild, author
+    before = len(REQUESTS)
+    await cog._answer(m8, "who talked the most on this server?", cfg)
+    assert len(REQUESTS) == before + 2
+    follow = REQUESTS[-1]["body"]["messages"]
+    assert follow[-1]["content"][0]["type"] == "tool_result" and "User12345" in follow[-1]["content"][0]["content"]
+    assert m8.reply.await_args.args[0] == "User12345 talked the most (1 message)."
+    print("ok claude read tools: lookup answered in the same reply")
     await cog.cog_unload()
 
 

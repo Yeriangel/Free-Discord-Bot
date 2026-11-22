@@ -54,7 +54,7 @@ def catalog_strings() -> set[str]:
 def python_strings() -> tuple[set[str], list[str]]:
     found, stray = set(), []
     for path in (ROOT / "botd").rglob("*.py"):
-        if "locale_data" in path.parts or path.name in ("catalog_modules.py", "i18n.py"):
+        if "locale_data" in path.parts or path.name in ("catalog_modules.py", "catalog_new.py", "i18n.py"):
             continue
         source = path.read_text(encoding="utf-8")
         ignored = {i for i, line in enumerate(source.splitlines(), 1) if "i18n: ignore" in line}

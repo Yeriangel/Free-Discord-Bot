@@ -7,6 +7,7 @@ status ("ready" or "soon"), slash/text commands it adds, and the settings fields
 CATEGORIES = [
     ("essentials", "חיוני", "Essentials"),
     ("server_management", "ניהול שרת", "Server Management"),
+    ("automations", "אוטומציות", "Automations"),
     ("utilities", "כלים", "Utilities"),
     ("social", "התראות רשתות", "Social Alerts"),
     ("games", "משחקים וכיף", "Games & Fun"),
@@ -205,7 +206,7 @@ MODULES = [
         ],
     },
     {
-        "key": "automations", "category": "server_management", "label": "אוטומציות",
+        "key": "automations", "category": "automations", "label": "אוטומציות",
         "description": "כשמישהו עושה X, אם מתקיימים תנאים, עשה Y: הודעות, ריאקשנים, כפתורים, תפקידים, קול, מטבעות ו-XP. עד 50 אוטומציות.",
         "permissions": ["manage_roles", "manage_messages", "add_reactions", "create_public_threads", "send_messages_in_threads"],
         "intents": ["members", "message_content"], "status": "ready", "commands": [],
@@ -300,3 +301,8 @@ MODULES = [
         ],
     },
 ]
+
+# Modules that were placeholders are now built: swap them in, keeping the order above.
+from .catalog_new import NEW_MODULES  # noqa: E402
+
+MODULES = [NEW_MODULES.get(m["key"], m) for m in MODULES]

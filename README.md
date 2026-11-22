@@ -33,13 +33,20 @@ You can also just **reply** to the bot instead of mentioning it every time.
 
 | Category | Modules |
 |---|---|
-| Essentials | Welcome & Goodbye (text or embed), Auto Role, Reaction Roles, AutoMod (10 rules, each with its own action), Warnings with automatic escalation, Restricted Channels, Moderation commands with confirm buttons, Audit Log, Levels (XP, role rewards, `/rank`, `/levels`) |
-| Server Management | Custom Commands (can give or remove roles), Automations (WHEN someone… IF… DO…, 11 events, 20 conditions, 12 actions, buttons, retry on failure) |
-| Games & Fun | Economy: custom currency, `/daily` with streaks, dice, guess, roulette, rock-paper-scissors, a shop, boosts |
-| AI | Chat with Claude (Haiku / Sonnet / Opus), server actions with confirmation |
+| Essentials | Welcome & Goodbye (text or embed), Auto Role, Reaction Roles, AutoMod (10 rules, each with its own action), Warnings with automatic escalation, Restricted Channels, Moderation commands with confirm buttons, Audit Log, Levels (XP, role rewards, `/rank`, `/levels`), Starboard |
+| Server Management | Custom Commands (can give or remove roles), Invite Tracker, Tickets (private threads), Suggestion Box |
+| Automations | WHEN someone… IF… DO…: 11 events, 20 conditions, 12 actions, buttons, retry on failure |
+| Utilities | Polls (Discord's own), Embed Messages, Reminders (repeating + `/remind`), Statistics Channels, Temporary Voice Channels, AFK |
+| Social Alerts | YouTube, Twitch, Reddit and any RSS feed (TikTok and X have no free API, so they are not supported) |
+| Games & Fun | Economy (currency, `/daily` streaks, dice, guess, roulette, rock-paper-scissors, shop, boosts), Giveaways, Birthdays |
+| AI | Chat with Claude (Haiku / Sonnet / Opus), server actions with confirmation, saves birthdays / reminders / giveaways / polls you mention (after you confirm) |
 | App | Bot Personalizer (avatar, banner, status, activity), per-server profiles, invite link builder with minimal permissions, live logs, Ctrl+K search, online updates with rollback |
 
-Some modules are marked "coming soon" in the app (giveaways, tickets, polls, social alerts and more).
+Tell the bot "John's birthday is on 24/12" and it offers to add it to Birthdays; it saves it only after you click
+**Confirm** or type "yes". It can also answer questions like "who talks the most here?" from its own message count.
+
+**Missing intents?** The app has a **Turn on automatically** button that switches on the Server Members and Message
+Content intents through Discord's API (works for bots in fewer than 100 servers) and reconnects the bot.
 
 ## Install (Windows)
 

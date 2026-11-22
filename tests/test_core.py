@@ -168,7 +168,7 @@ def test_permissions_minimal_by_default():
     url = catalog.invite_url("123", ["view_channel", "send_messages"], "456456456456456456")
     assert "permissions=3072" in url and "guild_id=456456456456456456" in url
     assert catalog.permissions_value(["administrator"]) == 8
-    assert [c[0] for c in catalog.CATEGORIES] == ["essentials", "server_management", "utilities", "social", "games", "ai"]
+    assert [c[0] for c in catalog.CATEGORIES] == ["essentials", "server_management", "automations", "utilities", "social", "games", "ai"]
 
 
 def test_avatar_validation():

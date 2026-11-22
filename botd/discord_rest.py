@@ -70,6 +70,41 @@ async def get_application(token: str) -> dict:
     return await _request("GET", "/oauth2/applications/@me", token)
 
 
+# Application flags. The "_LIMITED" ones are the privileged intents of bots in fewer than 100 servers,
+# and Discord lets the bot itself switch them on through the API (the others need Discord's approval).
+FLAG_PRESENCE_LIMITED = 1 << 13
+FLAG_MEMBERS_FULL, FLAG_MEMBERS_LIMITED = 1 << 14, 1 << 15
+FLAG_CONTENT_FULL, FLAG_CONTENT_LIMITED = 1 << 18, 1 << 19
+LIMITED_MASK = FLAG_PRESENCE_LIMITED | FLAG_MEMBERS_LIMITED | FLAG_CONTENT_LIMITED
+
+
+def intents_from_flags(flags: int) -> dict:
+    return {"members": bool(flags & (FLAG_MEMBERS_FULL | FLAG_MEMBERS_LIMITED)),
+            "message_content": bool(flags & (FLAG_CONTENT_FULL | FLAG_CONTENT_LIMITED))}
+
+
+async def enable_intents(token: str) -> dict:
+    """Switches on Server Members + Message Content for this bot. Returns the intents now on."""
+    app = await get_application(token)
+    flags = int(app.get("flags") or 0)
+    have = intents_from_flags(flags)
+    if all(have.values()):
+        return have
+    wanted = flags
+    if not have["members"]:
+        wanted |= FLAG_MEMBERS_LIMITED
+    if not have["message_content"]:
+        wanted |= FLAG_CONTENT_LIMITED
+    try:
+        new = await _request("PATCH", "/applications/@me", token, json={"flags": wanted})
+    except DiscordAPIError as exc:
+        if exc.status != 400:
+            raise
+        # some read-only flags may be rejected: send only the flags the API lets us change
+        new = await _request("PATCH", "/applications/@me", token, json={"flags": wanted & LIMITED_MASK})
+    return intents_from_flags(int(new.get("flags") or 0))
+
+
 def validate_avatar_data_uri(data_uri: str) -> str:
     """Checks a data: URI from the UI and returns it in the form Discord accepts."""
     if not data_uri.startswith("data:") or ";base64," not in data_uri:

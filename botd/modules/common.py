@@ -83,3 +83,36 @@ def mod_embed(action: str, target: discord.abc.User, moderator: discord.abc.User
     if extra:
         embed.add_field(name=tr("פרטים", lang), value=extra[:1000], inline=False)
     return embed
+
+
+_DURATION_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+
+
+def parse_duration(text: str) -> int | None:
+    """'10m', '2h', '1d12h', '1w', '90' (minutes) -> seconds. None if it cannot be read."""
+    import re
+
+    text = (text or "").strip().lower().replace(" ", "")
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text) * 60
+    parts = re.findall(r"(\d+)([smhdw])", text)
+    if not parts or "".join(n + u for n, u in parts) != text:
+        return None
+    return sum(int(n) * _DURATION_UNITS[u] for n, u in parts)
+
+
+def has_any_role(member, role_ids) -> bool:
+    ids = set(role_ids or [])
+    return bool(ids) and any(str(r.id) in ids for r in getattr(member, "roles", []))
+
+
+async def reply_off(interaction: discord.Interaction, bot) -> None:
+    await interaction.response.send_message(
+        tr("המודול הזה כבוי בשרת הזה. אפשר להפעיל אותו באפליקציה.", bot.lang(interaction.guild)), ephemeral=True)
+
+
+def relative_time(ts: float) -> str:
+    """Discord renders this as 'in 5 minutes' / '2 hours ago' in each user's own language."""
+    return f"<t:{int(ts)}:R>"

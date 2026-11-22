@@ -9,6 +9,8 @@ import threading
 import time
 from pathlib import Path
 
+from .store_features import FeatureStoreMixin
+
 DEFAULT_SETTINGS = {
     "allowed_user_id": "",
     "allowed_channel_id": "",
@@ -28,7 +30,7 @@ def valid_snowflake(value: str) -> bool:
     return value == "" or bool(_SNOWFLAKE.match(value))
 
 
-class Store:
+class Store(FeatureStoreMixin):
     def __init__(self, path: Path):
         self._lock = threading.RLock()
         self._cache: dict[str, dict] = {}
@@ -92,6 +94,7 @@ class Store:
             cols = {r["name"] for r in self._db.execute("PRAGMA table_info(guilds)")}
             if "config" not in cols:  # upgrade from v0.1
                 self._db.execute("ALTER TABLE guilds ADD COLUMN config TEXT NOT NULL DEFAULT '{}'")
+        self._init_features()
 
     def close(self) -> None:
         with self._lock:

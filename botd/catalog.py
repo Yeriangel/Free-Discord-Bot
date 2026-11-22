@@ -21,6 +21,8 @@ PERMISSIONS = [
     ("manage_messages", 1 << 13, "ניהול הודעות (מחיקה)", True),
     ("manage_threads", 1 << 34, "ניהול שרשורים", True),
     ("create_public_threads", 1 << 35, "יצירת שרשורים", False),
+    ("create_private_threads", 1 << 36, "יצירת שרשורים פרטיים", False),
+    ("send_polls", 1 << 49, "יצירת סקרים", False),
     ("manage_nicknames", 1 << 27, "ניהול כינויים", True),
     ("manage_roles", 1 << 28, "ניהול תפקידים", True),
     ("manage_channels", 1 << 4, "ניהול ערוצים", True),
@@ -105,7 +107,7 @@ def _validate_field(field: dict, value):
         if value not in allowed:
             raise ValueError(tr("{label}: ערך לא חוקי", label=label))
         return value
-    if t in ("channel", "role"):
+    if t in ("channel", "role", "voice_channel", "category"):
         return _snowflake(value, label)
     if t in ("channels", "roles"):
         items = [_snowflake(v, label) for v in (value or []) if str(v or "").strip()]

@@ -51,22 +51,116 @@ TOOLS = [
     {"name": "send_message", "description": "Send a message in a channel.",
      "input_schema": _obj({"channel_id": {"type": "string"}, "text": {"type": "string"}}, ["channel_id", "text"])},
 ]
-for _t in TOOLS:
+# Tools that save something in one of the bot's modules (still shown for confirmation first).
+# Each is offered only when its module is on in this server.
+DATA_TOOLS = [
+    {"name": "add_birthday", "module": "birthdays",
+     "description": "Save someone's birthday in the server's Birthdays list. Use it when the user mentions a birthday, "
+                    "even in passing (for example 'John's birthday is on 24/12'). The user confirms before it is saved.",
+     "input_schema": _obj({"person": {"type": "string", "description": "A member (mention, ID or exact name), or just the person's name"},
+                           "date": {"type": "string", "description": "DD/MM, or DD/MM/YYYY when the year is known"}},
+                          ["person", "date"])},
+    {"name": "create_reminder", "module": "reminders",
+     "description": "Set a reminder that the bot posts in this channel later. Use it when the user asks to be reminded "
+                    "or mentions something they must do at a certain time.",
+     "input_schema": _obj({"text": {"type": "string"}, "in_minutes": {"type": "integer", "description": "1 to 525600"},
+                           "for_user": {"type": "string", "description": "Who to remind (mention, ID or name); empty = the user"}},
+                          ["text", "in_minutes", "for_user"])},
+    {"name": "start_giveaway", "module": "giveaways",
+     "description": "Start a giveaway with a join button and random winners.",
+     "input_schema": _obj({"prize": {"type": "string"}, "duration_minutes": {"type": "integer", "description": "1 to 86400"},
+                           "winners": {"type": "integer", "description": "1 to 20"},
+                           "channel_id": {"type": "string", "description": "Channel ID, or empty for this channel"}},
+                          ["prize", "duration_minutes", "winners", "channel_id"])},
+    {"name": "create_poll", "module": "polls",
+     "description": "Post a Discord poll.",
+     "input_schema": _obj({"question": {"type": "string"}, "answers": {"type": "array", "items": {"type": "string"}},
+                           "hours": {"type": "integer", "description": "1 to 768"},
+                           "channel_id": {"type": "string", "description": "Channel ID, or empty for this channel"}},
+                          ["question", "answers", "hours", "channel_id"])},
+]
+# Read-only tools: answered at once, no confirmation.
+READ_TOOLS = [
+    {"name": "top_members", "description": "Who sent the most messages in this server (counted by the bot since it was "
+                                            "added), plus levels XP when the Levels module is on.",
+     "input_schema": _obj({"limit": {"type": "integer", "description": "1 to 25"}}, ["limit"])},
+    {"name": "list_birthdays", "description": "The birthdays saved in this server.", "input_schema": _obj({}, [])},
+    {"name": "server_info", "description": "Basic numbers about this server: members, channels, roles, boosts, creation date.",
+     "input_schema": _obj({}, [])},
+]
+READ_NAMES = {t["name"] for t in READ_TOOLS}
+DATA_MODULES = {t["name"]: t["module"] for t in DATA_TOOLS}
+
+for _t in TOOLS + DATA_TOOLS + READ_TOOLS:
     _t["strict"] = True
+
+
+def api_tools(tools: list[dict]) -> list[dict]:
+    """Tool definitions as the API wants them (without our own 'module' key)."""
+    return [{k: v for k, v in t.items() if k != "module"} for t in tools]
+
+
+def available_tools(bot, guild, allow_actions: bool) -> list[dict]:
+    tools = list(READ_TOOLS)
+    tools += [t for t in DATA_TOOLS if bot.cfg(guild, t["module"])]
+    if allow_actions:
+        tools += TOOLS
+    return api_tools(tools)
+
+
+def run_read_tool(bot, guild: discord.Guild, name: str, args: dict) -> str:
+    """Executes a read-only tool and returns plain text for Claude."""
+    import datetime as dt
+
+    gid = str(guild.id)
+    if name == "top_members":
+        limit = max(1, min(int(args.get("limit") or 10), 25))
+        rows = bot.store.top_talkers(gid, limit)
+        since = bot.store.activity_since(gid)
+        if not rows:
+            return "No messages counted yet. The bot counts messages only from the moment it was running in this server."
+        head = f"Messages counted since {dt.datetime.fromtimestamp(since):%Y-%m-%d} (only while the bot was online):"
+        lines = [f"{i}. {r['user_name']} (<@{r['user_id']}>): {r['messages']} messages" for i, r in enumerate(rows, 1)]
+        if bot.cfg(guild, "levels"):
+            lines.append("Levels XP leaderboard: " + ", ".join(
+                f"{r['user_name']} {r['xp']} XP" for r in bot.store.leaderboard(gid, limit=min(limit, 10))))
+        return head + "\n" + "\n".join(lines)
+    if name == "list_birthdays":
+        rows = bot.store.list_birthdays(gid)
+        return "\n".join(f"{r['user_name']}: {r['day']:02d}/{r['month']:02d}" + (f"/{r['year']}" if r["year"] else "")
+                         for r in rows) or "No birthdays saved."
+    if name == "server_info":
+        created = guild.created_at.strftime("%Y-%m-%d") if getattr(guild, "created_at", None) else "?"
+        return (f"Name: {guild.name}\nMembers: {guild.member_count}\nChannels: {len(guild.channels)}\n"
+                f"Roles: {max(0, len(guild.roles) - 1)}\nBoosts: {guild.premium_subscription_count or 0}\nCreated: {created}")
+    return "Unknown tool"
 
 PERMS = {"timeout_member": "moderate_members", "remove_timeout": "moderate_members", "kick_member": "kick_members",
          "ban_member": "ban_members", "add_role": "manage_roles", "remove_role": "manage_roles",
          "rename_channels": "manage_channels", "delete_messages": "manage_messages", "send_message": "send_messages"}
 
 
-def server_context(guild: discord.Guild) -> str:
-    """Compact list of channels and roles so Claude can pick IDs (no member list)."""
+def server_context(guild: discord.Guild, tool_names: list[str] | None = None) -> str:
+    """What Claude knows about the server: today's date, how the tools work, channels and roles (no member list)."""
+    import datetime as dt
+
+    tool_names = tool_names or [t["name"] for t in TOOLS]
     chans = [f"{c.id} #{c.name} ({c.type.name})" + (f" in {c.category.name}" if getattr(c, "category", None) else "")
              for c in guild.channels if not isinstance(c, discord.CategoryChannel)][:150]
     roles = [f"{r.id} @{r.name}" for r in reversed(guild.roles) if not r.is_default() and not r.managed][:100]
-    return ("You can act in this Discord server with the provided tools when the user asks. "
-            "Every action is shown to the user for confirmation before it runs, so call the tools directly.\n"
-            f"Server: {guild.name}\nChannels (id #name (type)):\n" + "\n".join(chans) +
+    today = dt.date.today()
+    text = (f"Today is {today:%A, %d %B %Y}. You are in the Discord server '{guild.name}'.\n"
+            "Tools that change something are never run directly: the bot first shows the user what will happen, "
+            "with a confirm button (the user can also type yes/no). So when the user asks for an action, call the tool "
+            "right away instead of asking in text.\n")
+    saving = [n for n in tool_names if n in DATA_MODULES]
+    if saving:
+        text += ("When the user mentions something one of these tools can save (" + ", ".join(saving) + "), for example "
+                 "'John's birthday is on 24/12', call that tool so the user can choose to save it, and say in one short "
+                 "sentence that you can add it. Never invent dates or details the user did not give.\n")
+    if any(n in READ_NAMES for n in tool_names):
+        text += "Use the read tools (top_members, list_birthdays, server_info) to answer questions about the server.\n"
+    return (text + f"Server: {guild.name}\nChannels (id #name (type)):\n" + "\n".join(chans) +
             "\nRoles (id @name):\n" + "\n".join(roles))
 
 
@@ -85,10 +179,102 @@ class Planned:
         self.name, self.args, self.line, self.error = name, args, line, error
 
 
-def plan(guild: discord.Guild, invoker: discord.Member, name: str, args: dict, lang: str) -> Planned:
+def _plan_data(guild: discord.Guild, invoker: discord.Member, name: str, args: dict, lang: str, bot, channel) -> Planned:
+    """Plan lines for the module tools (birthdays, reminders, giveaways, polls)."""
+    import time
+
+    from .common import has_any_role, relative_time
+
+    module = DATA_MODULES[name]
+    cfg = bot.cfg(guild, module) if bot is not None else None
+    if not cfg:
+        return Planned(name, args, name, tr("המודול כבוי בשרת הזה. אפשר להפעיל אותו באפליקציה.", lang))
+    args.update(_bot=bot, _cfg=cfg)
+
+    def target_channel():
+        cid = str(args.get("channel_id") or "").strip()
+        ch = guild.get_channel(int(cid)) if cid.isdigit() else channel
+        return ch if ch is not None and hasattr(ch, "send") else None
+
+    if name == "add_birthday":
+        from .birthdays import fmt_date, parse_date
+
+        parsed = parse_date(str(args.get("date", "")))
+        if parsed is None:
+            return Planned(name, args, name, tr("תאריך לא תקין: {date}", lang, date=args.get("date", "")))
+        person = str(args.get("person", "")).strip()[:100]
+        member = resolve_member(guild, person)
+        if not person:
+            return Planned(name, args, name, tr("חסר שם", lang))
+        args.update(_member=member, _parsed=parsed)
+        who = member.display_name if member else person
+        date = fmt_date({"month": parsed[0], "day": parsed[1], "year": parsed[2]})
+        return Planned(name, args, tr("🎂 להוסיף לימי ההולדת: **{name}**, {date}", lang,
+                                      name=discord.utils.escape_markdown(who), date=date))
+    if name == "create_reminder":
+        minutes = max(1, min(int(args.get("in_minutes") or 0), 525600))
+        ref = str(args.get("for_user") or "").strip()
+        member = resolve_member(guild, ref) if ref else invoker
+        if member is None:
+            return Planned(name, args, name, tr("לא מצאתי את המשתמש '{user}'", lang, user=ref))
+        if channel is None:
+            return Planned(name, args, name, tr("לא נמצא הערוץ", lang))
+        due = time.time() + minutes * 60
+        args.update(_member=member, _due=due, _channel=channel)
+        return Planned(name, args, tr("⏰ תזכורת ל-{user} {when}: {message}", lang, user=f"**{discord.utils.escape_markdown(member.display_name)}**",
+                                      when=relative_time(due), message=str(args.get("text", ""))[:200]))
+    if name == "start_giveaway":
+        if not (invoker.guild_permissions.manage_guild or has_any_role(invoker, cfg["manager_role_ids"])):
+            return Planned(name, args, name, tr("אין לך הרשאה לפעולה הזו.", lang))
+        ch = target_channel()
+        if ch is None:
+            return Planned(name, args, name, tr("לא נמצא הערוץ", lang))
+        minutes = max(1, min(int(args.get("duration_minutes") or 60), 86400))
+        winners = max(1, min(int(args.get("winners") or 1), 20))
+        args.update(_channel=ch, _seconds=minutes * 60, _winners=winners)
+        from .common import human_duration
+
+        return Planned(name, args, tr("🎉 הגרלה על **{prize}** ב-#{channel}: {n} זוכים, למשך {duration}", lang,
+                                      prize=str(args.get("prize", ""))[:200], channel=ch.name, n=winners,
+                                      duration=human_duration(minutes * 60, lang)))
+    if name == "create_poll":
+        ch = target_channel()
+        answers = [str(a).strip()[:55] for a in args.get("answers", []) if str(a).strip()][:10]
+        if ch is None or len(answers) < 2 or not str(args.get("question", "")).strip():
+            return Planned(name, args, name, tr("צריך שאלה, לפחות 2 תשובות וערוץ", lang))
+        args.update(_channel=ch, _answers=answers)
+        return Planned(name, args, tr("📊 סקר ב-#{channel}: {question} ({answers})", lang, channel=ch.name,
+                                      question=str(args["question"])[:200], answers=" / ".join(answers)))
+    return Planned(name, args, name, tr("פעולה לא מוכרת", lang))
+
+
+async def _execute_data(p: Planned, invoker: discord.Member, lang: str) -> str:
+    a = p.args
+    bot, guild = a["_bot"], invoker.guild
+    if p.name == "add_birthday":
+        member = a["_member"]
+        bot.store.set_birthday(str(guild.id), str(member.id) if member else "",
+                               member.display_name if member else str(a["person"]).strip()[:100], *a["_parsed"])
+    elif p.name == "create_reminder":
+        bot.store.add_reminder(str(guild.id), str(a["_channel"].id), str(a["_member"].id), str(a["text"])[:1000], a["_due"])
+    elif p.name == "start_giveaway":
+        cog = bot.get_cog("Giveaways")
+        await cog.start(guild, a["_channel"], invoker, str(a["prize"])[:200], a["_seconds"], a["_winners"])
+    elif p.name == "create_poll":
+        from .polls import build_poll
+
+        await a["_channel"].send(poll=build_poll(str(a["question"]), a["_answers"], min(int(a.get("hours") or 24), a["_cfg"]["max_hours"])))
+    log.info(tr("Claude ביצע פעולה: %s (אישר: %s)"), p.name, invoker)
+    return "✅ " + p.line.split("\n")[0]
+
+
+def plan(guild: discord.Guild, invoker: discord.Member, name: str, args: dict, lang: str, bot=None,
+         channel=None) -> Planned:
     """Turns one tool call into a human-readable, permission-checked plan line."""
     from .moderation import hierarchy_error
 
+    if name in DATA_MODULES:
+        return _plan_data(guild, invoker, name, args, lang, bot, channel)
     perm = PERMS.get(name)
     if perm is None:
         return Planned(name, args, name, tr("פעולה לא מוכרת", lang))
@@ -153,6 +339,13 @@ def plan(guild: discord.Guild, invoker: discord.Member, name: str, args: dict, l
 
 
 async def execute(p: Planned, invoker: discord.Member, lang: str) -> str:
+    if p.name in DATA_MODULES:
+        try:
+            return await _execute_data(p, invoker, lang)
+        except (discord.HTTPException, ValueError) as exc:
+            text = getattr(exc, "text", None) or str(exc)
+            log.warning(tr("פעולה של Claude נכשלה (%s): %s"), p.name, text)
+            return "❌ " + p.line.split("\n")[0] + f": {text}"
     reason = f"Claude ({invoker}): {p.args.get('reason') or ''}"[:500]
     a = p.args
     try:

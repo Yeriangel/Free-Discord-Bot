@@ -176,6 +176,20 @@ def create_app(
         await manager.stop()
         return manager.status()
 
+    @app.post("/api/intents/enable")
+    async def intents_enable():
+        try:
+            found = await manager.enable_intents()
+        except ValueError as exc:
+            raise err(400, str(exc))
+        except discord_rest.DiscordAPIError as exc:
+            raise err(400, tr("דיסקורד לא איפשר להפעיל אוטומטית ({error}). הפעל ידנית ב-Developer Portal, בלשונית Bot.",
+                              error=exc.message), portal=True)
+        if not all(found.values()):
+            raise err(400, tr("דיסקורד לא איפשר להפעיל אוטומטית. בוטים ביותר מ-100 שרתים צריכים אישור מדיסקורד. הפעל ידנית ב-Developer Portal, בלשונית Bot."),
+                      portal=True)
+        return manager.status()
+
     # ---- settings & secrets ---------------------------------------------
     @app.get("/api/settings")
     async def get_settings():
@@ -235,6 +249,18 @@ def create_app(
             except anthropic.APIError as exc:
                 raise err(502, tr("Anthropic החזיר שגיאה: {error}", error=type(exc).__name__))
             return {"ok": True, "message": tr("המפתח תקין")}
+        if name in ("twitch_client_id", "twitch_client_secret"):
+            import httpx
+
+            cid, secret = secrets_store.get("twitch_client_id"), secrets_store.get("twitch_client_secret")
+            if not cid or not secret:
+                raise err(400, tr("צריך גם Client ID וגם Client Secret"))
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.post("https://id.twitch.tv/oauth2/token", data={
+                    "client_id": cid, "client_secret": secret, "grant_type": "client_credentials"})
+            if resp.status_code != 200:
+                raise err(401, tr("Twitch דחה את הפרטים"))
+            return {"ok": True, "message": tr("הפרטים של Twitch תקינים")}
         raise err(404, tr("סוד לא מוכר"))
 
     # ---- bot profile (name / avatar) ------------------------------------
@@ -454,6 +480,100 @@ def create_app(
             raise err(404, tr("המשתמש לא נמצא"))
         log.info(tr("הארנק של משתמש %s אופס מהאפליקציה בשרת %s"), uid, guild["name"])
         return {"ok": True}
+
+    # ---- newer modules: actions and data views -------------------------------------
+    def _live(gid: str) -> discord.Guild:
+        _guild_or_404(gid)
+        guild = manager.live_guild(gid)
+        if guild is None:
+            raise err(409, tr("הבוט צריך להיות מחובר ובשרת הזה"))
+        return guild
+
+    @app.post("/api/guilds/{gid}/embed/send")
+    async def send_embed(gid: str):
+        from .modules.embeds import build_embed
+
+        guild = _live(gid)
+        cfg = catalog.merged_config("embed_messages", store.raw_config(gid, "embed_messages"))
+        channel = guild.get_channel(int(cfg["channel_id"])) if cfg["channel_id"] else None
+        if channel is None or not hasattr(channel, "send"):
+            raise err(400, tr("בחר ערוץ ושמור"))
+        try:
+            msg = await channel.send(embed=build_embed(cfg))
+        except ValueError as exc:
+            raise err(400, str(exc))
+        except discord.HTTPException as exc:
+            raise err(400, tr("דיסקורד דחה את ההודעה: {error}", error=exc.text or exc.status))
+        log.info(tr("נשלחה הודעת Embed ל-#%s בשרת %s"), channel.name, guild.name)
+        return {"ok": True, "url": msg.jump_url}
+
+    @app.post("/api/guilds/{gid}/ticket-panel")
+    async def ticket_panel(gid: str):
+        guild = _live(gid)
+        cog = manager.bot.get_cog("Ticketing") if manager.bot else None
+        try:
+            msg = await cog.publish_panel(guild)
+        except ValueError as exc:
+            raise err(400, str(exc))
+        except discord.HTTPException as exc:
+            raise err(400, tr("דיסקורד דחה את ההודעה: {error}", error=exc.text or exc.status))
+        return {"ok": True, "url": msg.jump_url}
+
+    class BirthdayIn(BaseModel):
+        name: str = ""
+        user_id: str = ""
+        date: str
+
+    @app.get("/api/guilds/{gid}/birthdays")
+    async def list_birthdays(gid: str):
+        _guild_or_404(gid)
+        return store.list_birthdays(gid)
+
+    @app.post("/api/guilds/{gid}/birthdays")
+    async def add_birthday(gid: str, body: BirthdayIn):
+        from .modules.birthdays import parse_date
+
+        _guild_or_404(gid)
+        parsed = parse_date(body.date)
+        if parsed is None:
+            raise err(400, tr("תאריך לא תקין. כתוב יום/חודש, למשל 24/12 או 24/12/1995."))
+        uid, name = body.user_id.strip(), body.name.strip()[:100]
+        if uid and not valid_snowflake(uid):
+            raise err(400, tr("מזהה משתמש לא תקין"))
+        guild = manager.live_guild(gid)
+        member = guild.get_member(int(uid)) if guild is not None and uid else None
+        if member is not None:
+            name = member.display_name
+        if not uid and not name:
+            raise err(400, tr("צריך שם או מזהה משתמש"))
+        return {"id": store.set_birthday(gid, uid, name or uid, *parsed)}
+
+    @app.delete("/api/guilds/{gid}/birthdays/{bid}")
+    async def delete_birthday(gid: str, bid: int):
+        _guild_or_404(gid)
+        if not store.delete_birthday(gid, bid):
+            raise err(404, tr("לא נמצא"))
+        return {"ok": True}
+
+    @app.get("/api/guilds/{gid}/giveaways")
+    async def list_giveaways(gid: str):
+        _guild_or_404(gid)
+        return store.list_giveaways(gid)
+
+    @app.get("/api/guilds/{gid}/invites")
+    async def list_invites(gid: str):
+        _guild_or_404(gid)
+        return store.invite_board(gid, 50)
+
+    @app.get("/api/guilds/{gid}/tickets")
+    async def list_tickets(gid: str):
+        _guild_or_404(gid)
+        return store.list_tickets(gid)
+
+    @app.get("/api/guilds/{gid}/suggestions")
+    async def list_suggestions(gid: str):
+        _guild_or_404(gid)
+        return store.list_suggestions(gid)
 
     # ---- updates ------------------------------------------------------------------
     @app.get("/api/updates")

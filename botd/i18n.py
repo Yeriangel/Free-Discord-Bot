@@ -21,9 +21,9 @@ _ui_lang = "he"
 def table() -> dict[str, tuple[str, str, str]]:
     global _table
     if _table is None:
-        from .locale_data import bot, catalog, server, ui
+        from .locale_data import bot, catalog, features, server, ui
         merged: dict = {}
-        for part in (catalog.S, server.S, bot.S, ui.S):
+        for part in (features.S, catalog.S, server.S, bot.S, ui.S):  # older tables win on shared keys
             merged.update(part)
         _table = merged
     return _table

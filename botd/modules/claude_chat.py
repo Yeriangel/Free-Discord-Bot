@@ -25,6 +25,9 @@ PRICES = {"claude-haiku-5-5": (0.10, 0.50), "claude-sonnet-5-5": (2.0, 10.0), "c
 # Sonnet/Opus 5.5 can decline some requests for safety reasons; the API can then retry on another model
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 DISCORD_LIMIT = 1900
+LANGUAGE_RULE = ("\n\nAlways reply in the same language as the user's latest message "
+                 "(English → English, Hebrew → Hebrew, Russian → Russian, Arabic → Arabic), "
+                 "even if these instructions are written in another language.")
 
 
 def should_respond(*, is_dm: bool, author_id: str, channel_id: str, parent_id: str | None,
@@ -57,6 +60,20 @@ def split_message(text: str, limit: int = DISCORD_LIMIT) -> list[str]:
     return chunks or ["…"]
 
 
+YES_WORDS = {"yes", "y", "yeah", "yep", "ok", "okay", "sure", "do it", "כן", "אשר", "אישור", "בטח", "да", "ок", "نعم", "أجل"}  # i18n: ignore
+NO_WORDS = {"no", "n", "nope", "cancel", "stop", "לא", "ביטול", "בטל", "нет", "отмена", "لا", "إلغاء"}  # i18n: ignore
+MAX_TOOL_ROUNDS = 3
+
+
+def yes_no(text: str) -> bool | None:
+    word = text.strip().lower().strip(".!?, ")
+    if word in YES_WORDS:
+        return True
+    if word in NO_WORDS:
+        return False
+    return None
+
+
 def usage_key(day: dt.date | None = None) -> str:
     return f"claude_usage:{(day or dt.date.today()).isoformat()}"
 
@@ -69,6 +86,7 @@ class ClaudeChat(commands.Cog):
         self._client: anthropic.AsyncAnthropic | None = None
         self._client_key: str | None = None
         self._locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
+        self.pending: dict[int, discord.ui.View] = {}  # channel id -> confirmation waiting for an answer
 
     async def cog_unload(self) -> None:
         if self._client is not None:
@@ -100,11 +118,11 @@ class ClaudeChat(commands.Cog):
                 text = text.replace(form, "")
         return text.strip()
 
-    def _record_usage(self, usage, model: str = MODEL) -> dict:
+    def _record_usage(self, usage, model: str = MODEL, count: bool = True) -> dict:
         key = usage_key()
         data = self.bot.store.get_kv(key, {"messages": 0, "input_tokens": 0, "output_tokens": 0})
         tin, tout = int(getattr(usage, "input_tokens", 0) or 0), int(getattr(usage, "output_tokens", 0) or 0)
-        data["messages"] += 1
+        data["messages"] += 1 if count else 0
         data["input_tokens"] += tin
         data["output_tokens"] += tout
         per = data.setdefault("by_model", {}).setdefault(model, [0, 0])
@@ -125,6 +143,13 @@ class ClaudeChat(commands.Cog):
         cfg = self._config_for(message)
         if cfg is None:
             return
+        view = self.pending.get(message.channel.id)
+        if view is not None and str(message.author.id) == settings["allowed_user_id"]:
+            answer = yes_no(message.content)
+            if answer is not None:  # a typed "yes"/"no" answers the waiting confirmation
+                view.value = answer
+                view.stop()
+                return
         if not should_respond(
             is_dm=message.guild is None,
             author_id=str(message.author.id),
@@ -169,18 +194,30 @@ class ClaudeChat(commands.Cog):
             try:
                 async with message.channel.typing():
                     model = MODELS.get(cfg.get("model", "haiku"), MODEL)
-                    system = cfg["system_prompt"] or "You are a helpful assistant."
-                    acting = bool(cfg.get("allow_actions")) and isinstance(message.author, discord.Member)
-                    if acting:
-                        system += "\n\n" + claude_actions.server_context(message.guild)
+                    system = (cfg["system_prompt"] or "You are a helpful assistant.") + LANGUAGE_RULE
+                    in_guild = message.guild is not None and isinstance(message.author, discord.Member)
+                    tools = claude_actions.available_tools(self.bot, message.guild, bool(cfg.get("allow_actions"))) if in_guild else []
+                    if tools:
+                        system += "\n\n" + claude_actions.server_context(message.guild, [t["name"] for t in tools])
                     request = dict(model=model, max_tokens=MAX_TOKENS, system=system,
                                    output_config={"effort": cfg["effort"]}, messages=messages)
-                    if acting:
-                        request["tools"] = claude_actions.TOOLS
-                    if model == MODEL:
-                        response = await client.messages.create(**request)
-                    else:
-                        response = await client.beta.messages.create(**request, betas=[FALLBACK_BETA], fallbacks="default")
+                    if tools:
+                        request["tools"] = tools
+                    for _round in range(MAX_TOOL_ROUNDS):
+                        if model == MODEL:
+                            response = await client.messages.create(**request)
+                        else:
+                            response = await client.beta.messages.create(**request, betas=[FALLBACK_BETA], fallbacks="default")
+                        calls = [b for b in response.content if b.type == "tool_use"]
+                        if not calls or any(c.name not in claude_actions.READ_NAMES for c in calls):
+                            break
+                        # read-only lookups: answer them and let Claude continue
+                        self._record_usage(response.usage, getattr(response, "model", None) or model, count=False)
+                        results = [{"type": "tool_result", "tool_use_id": c.id,
+                                    "content": claude_actions.run_read_tool(self.bot, message.guild, c.name, dict(c.input))}
+                                   for c in calls]
+                        request["messages"] = request["messages"] + [{"role": "assistant", "content": response.content},
+                                                                     {"role": "user", "content": results}]
             except anthropic.AuthenticationError:
                 log.error(tr("Claude: מפתח Anthropic לא תקין"))
                 await message.reply(tr("מפתח Anthropic לא תקין. עדכן אותו באפליקציה.", cfg.get("_lang", "he")), mention_author=False)
@@ -199,7 +236,7 @@ class ClaudeChat(commands.Cog):
                 await message.reply(tr("אין חיבור ל-Anthropic. בדוק את האינטרנט.", cfg.get("_lang", "he")), mention_author=False)
                 return
 
-            tool_calls = [b for b in response.content if b.type == "tool_use"]
+            tool_calls = [b for b in response.content if b.type == "tool_use" and b.name not in claude_actions.READ_NAMES]
             if response.stop_reason == "refusal":
                 reply = tr("Claude לא יכול לענות על זה.", cfg.get("_lang", "he"))
             elif tool_calls:
@@ -238,7 +275,8 @@ class ClaudeChat(commands.Cog):
         """Show Claude's planned server actions, wait for the allowed user to confirm, then run them."""
         from .moderation import ConfirmView
 
-        plans = [claude_actions.plan(message.guild, message.author, c.name, dict(c.input), lang) for c in calls[:10]]
+        plans = [claude_actions.plan(message.guild, message.author, c.name, dict(c.input), lang, self.bot, message.channel)
+                 for c in calls[:10]]
         ok_plans = [p for p in plans if not p.error]
         lines = [("• " + p.line) if not p.error else f"• ⚠️ {p.line}: {p.error}" for p in plans]
         head = (said + "\n\n" if said else "") + tr("**Claude רוצה לבצע:**", lang) + "\n" + "\n".join(lines)
@@ -246,9 +284,14 @@ class ClaudeChat(commands.Cog):
             return head + "\n" + tr("אין פעולה שאפשר לבצע.", lang)
         view = ConfirmView(message.author.id, lang)
         view.timeout = 60
-        prompt = await message.reply(head[:1900] + "\n" + tr("לאשר? (60 שניות)", lang), view=view,
+        prompt = await message.reply(head[:1850] + "\n" + tr("לאשר? לחץ על הכפתור או כתוב כן / לא (60 שניות)", lang), view=view,
                                      mention_author=False, allowed_mentions=discord.AllowedMentions.none())
-        await view.wait()
+        self.pending[message.channel.id] = view
+        try:
+            await view.wait()
+        finally:
+            if self.pending.get(message.channel.id) is view:
+                del self.pending[message.channel.id]
         if not view.value:
             text = head[:1800] + "\n" + (tr("בוטל. לא בוצע דבר.", lang) if view.value is False else tr("⌛ פג תוקף. לא בוצע דבר.", lang))
             if view.interaction is not None:
@@ -256,7 +299,10 @@ class ClaudeChat(commands.Cog):
             else:
                 await prompt.edit(content=text, view=None)
             return None
-        await view.interaction.response.edit_message(content=head[:1800] + "\n" + tr("מבצע…", lang), view=None)
+        if view.interaction is not None:
+            await view.interaction.response.edit_message(content=head[:1800] + "\n" + tr("מבצע…", lang), view=None)
+        else:
+            await prompt.edit(content=head[:1800] + "\n" + tr("מבצע…", lang), view=None)
         results = [await claude_actions.execute(p, message.author, lang) for p in ok_plans]
         final = (said + "\n\n" if said else "") + "\n".join(results)
         await prompt.edit(content=final[:2000], view=None)
