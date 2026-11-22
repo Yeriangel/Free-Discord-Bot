@@ -175,6 +175,27 @@ def create_app(
         log.info(tr("האפליקציה נפתחת מחדש…"))
         return {"ok": True}
 
+    @app.post("/api/app/reload")
+    async def reload_service():
+        """Applies an installed update without closing the window: a new service (the new code) takes over this
+        port and token, the bots reconnect, and the page reloads itself. Big updates use /api/app/restart instead."""
+        import os
+        import subprocess
+        import sys
+
+        exe = Path(sys.executable)
+        pythonw = exe.with_name("pythonw.exe")
+        flags = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW) \
+            if sys.platform == "win32" else 0
+        env = dict(os.environ, BOTD_TAKEOVER="1", BOTD_PORT=str(port), BOTD_TOKEN=session_token)
+        from . import paths
+
+        subprocess.Popen([str(pythonw if pythonw.exists() else exe), "-m", "botd"], cwd=str(UI_DIR.parent), env=env,
+                         creationflags=flags, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=open(paths.log_dir() / "botd-stderr.log", "ab"), close_fds=True)
+        asyncio.create_task(_shutdown_now(tr("מחיל את העדכון: השירות נטען מחדש עם הגרסה החדשה")))
+        return {"ok": True}
+
     async def _shutdown_now(reason: str) -> None:
         """Disconnect every bot first (so a slow exit can never leave a bot answering), then stop the service.
         If the process is somehow still alive 15 seconds later, it ends for sure."""

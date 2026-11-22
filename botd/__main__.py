@@ -70,16 +70,42 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
+def port_free(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind(("127.0.0.1", port))
+            return True
+        except OSError:
+            return False
+
+
+def wait_for_old_service(port: int, timeout: float = 40.0) -> bool:
+    """Live reload after an update: the old service is shutting down; wait until it is gone and its port is free."""
+    import time
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not session_alive(read_session()) and port_free(port):
+            return True
+        time.sleep(0.25)
+    return False
+
+
 def main() -> int:
-    if session_alive(read_session()):
+    takeover = os.environ.pop("BOTD_TAKEOVER", "") == "1"
+    if takeover:
+        wanted = int(os.environ.get("BOTD_PORT") or 0)
+        if not wait_for_old_service(wanted):
+            os.environ.pop("BOTD_PORT", None)  # the port stayed busy: use a new one (the window follows it)
+    elif session_alive(read_session()):
         print("Bot service is already running.")
         return 0
 
     setup_logging()
     secrets_store.load_all()  # register secrets with the log redactor
 
-    port = int(os.environ.get("BOTD_PORT") or free_port())
-    token = secrets.token_urlsafe(32)
+    port = int(os.environ.pop("BOTD_PORT", "") or free_port())
+    token = os.environ.pop("BOTD_TOKEN", "") or secrets.token_urlsafe(32)
     store = Store(paths.db_file())
     from .i18n import set_ui_lang
     set_ui_lang(store.get_settings()["ui_lang"])

@@ -60,6 +60,35 @@ class ApiError extends Error {
   constructor(message, status, extra) { super(message); this.status = status; this.extra = extra || {}; }
 }
 
+/* Applies an installed update without closing the app: the service reloads with the new code (the bot reconnects
+   for a few seconds), then this page reloads itself with the new screens. */
+async function applyLiveUpdate(tag) {
+  const box = document.createElement("div");
+  box.className = "modal live-update";
+  box.innerHTML = `<div class="modal-card"><h2></h2><p class="muted"></p><div class="live-update-bar"><span></span></div></div>`;
+  box.querySelector("h2").textContent = t("מחיל את העדכון…");
+  box.querySelector("p").textContent = t("הבוט מתנתק לכמה שניות וחוזר. אין צורך לסגור את האפליקציה.");
+  document.body.appendChild(box);
+  let before = "";
+  try { before = (await api("GET", "/ping")).build || ""; } catch { /* the service may already be reloading */ }
+  await api("POST", "/app/reload");
+  const want = String(tag || "").replace(/^v/i, "");
+  const started = Date.now();
+  while (Date.now() - started < 60000) {
+    await new Promise(r => setTimeout(r, 700));
+    try {
+      const ping = await api("GET", "/ping");
+      if (ping.build && ping.build !== before && (!want || ping.version === want)) {
+        sessionStorage.setItem("liveUpdated", ping.version);
+        location.reload();
+        return;
+      }
+    } catch { /* still restarting */ }
+  }
+  box.querySelector("h2").textContent = t("העדכון הותקן");
+  box.querySelector("p").textContent = t("השירות לא חזר בזמן. סגור את האפליקציה ופתח אותה שוב.");
+}
+
 async function api(method, path, body) {
   let resp;
   try {
@@ -247,6 +276,8 @@ function guildLangSelect() {
 
 /* ===== live events ===== */
 function connectWS() {
+  const updated = sessionStorage.getItem("liveUpdated");
+  if (updated) { sessionStorage.removeItem("liveUpdated"); setTimeout(() => toast(t("עודכן לגרסה {tag}", { tag: updated }), "ok"), 400); }
   const ws = new WebSocket(`ws://${location.host}/ws`);
   ws.onopen = () => ws.send(JSON.stringify({ token: TOKEN }));
   ws.onmessage = (ev) => {
@@ -1867,13 +1898,14 @@ const actions = {
   async "install-version"(btn) {
     const newer = btn.dataset.newer === "1";
     const ok = await confirmDialog(newer ? t("לעדכן לגרסה {tag}?", { tag: btn.dataset.tag }) : t("לחזור לגרסה {tag}?", { tag: btn.dataset.tag }),
-      newer ? "הקבצים של האפליקציה יוחלפו בגרסה שבחרת. ההגדרות, הסודות והנתונים שלך לא משתנים, וגיבוי של הגרסה הנוכחית נשמר. אחרי ההתקנה צריך לסגור את האפליקציה ולפתוח אותה מחדש."
+      newer ? "הקבצים של האפליקציה יוחלפו בגרסה שבחרת. ההגדרות, הסודות והנתונים שלך לא משתנים, וגיבוי של הגרסה הנוכחית נשמר. עדכון רגיל נכנס לתוקף מיד, בלי לסגור את האפליקציה. רק עדכון גדול צריך לפתוח את האפליקציה מחדש."
         : "⚠️ גרסאות ישנות עובדות פחות טוב: יש בהן באגים שתוקנו מאז, חסרים בהן תיקוני אבטחה ויציבות, והבוט עלול להתנהג בשרת שלך בצורה לא צפויה. בגרסאות 1.0.0 עד 1.0.2 גם העדכון מתוך האפליקציה לא עובד, ותצטרך להוריד גרסה חדשה ידנית. מומלץ להישאר בגרסה האחרונה.\nההגדרות והנתונים שלך לא משתנים, וגיבוי של הגרסה הנוכחית נשמר.",
       newer ? "עדכן" : "חזור לגרסה", !newer);
     if (!ok) return;
     await guarded(btn, async () => {
       btn.textContent = t("מתקין…");
-      await api("POST", "/updates/install", { tag: btn.dataset.tag });
+      const res = await api("POST", "/updates/install", { tag: btn.dataset.tag });
+      if (!res.restart_required) { await applyLiveUpdate(res.installed); return; }
       const now = await confirmDialog("הגרסה הותקנה", "לחץ 'הפעל מחדש' והאפליקציה תיסגר ותיפתח מחדש לבד על הגרסה החדשה. הבוט יתנתק לכמה שניות ויחזור.", "הפעל מחדש", false);
       if (now) { await api("POST", "/app/restart"); toast("האפליקציה נפתחת מחדש…", "ok"); }
       else loadUpdates();

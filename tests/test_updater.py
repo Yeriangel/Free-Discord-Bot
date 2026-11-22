@@ -86,6 +86,30 @@ async def install_scenario():
     print("ok install: files replaced, .venv untouched, backup of the old version saved")
 
 
+def test_live_update_or_restart():
+    """Normal updates apply in place; the window's own code, new packages or going back to an old version reopen the app."""
+    from botd import updater
+
+    assert not updater.restart_required("v1.0.13", ["botd/bot.py", "ui/app.js", "botd/__init__.py"], False)
+    assert updater.restart_required("v1.0.13", ["app.py", "botd/bot.py"], False)
+    assert updater.restart_required("v1.0.14", ["botd/bot.py"], True)
+    assert updater.restart_required("v1.0.12", ["botd/bot.py"], False)  # older versions cannot take over in place
+    assert not updater.restart_required("v2.0.0", [], False)
+
+
+def test_service_takeover_port_check():
+    import socket
+
+    from botd.__main__ import port_free
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        s.listen()
+        busy = s.getsockname()[1]
+        assert not port_free(busy)
+    assert port_free(busy)
+
+
 if __name__ == "__main__":
     test_versions_and_hosts()
     test_package_checks()

@@ -154,6 +154,15 @@ def main() -> int:
         while not replaced.is_set():
             time.sleep(1.5)
             current = read_session()
+            if current and current.get("token") == session["token"] and current.get("port") != session["port"] \
+                    and session_alive(current):
+                # a live update moved the service to another port: keep the window, just point it there
+                session.update(port=current["port"], pid=current.get("pid"))
+                try:
+                    window.load_url(f"http://127.0.0.1:{current['port']}/#token={session['token']}")
+                except Exception:  # noqa: BLE001
+                    pass
+                continue
             if current and current.get("token") != session["token"] and session_alive(current):
                 replaced.set()
                 try:

@@ -153,17 +153,39 @@ async def install(repo: str, tag: str) -> dict:
     old_req = (APP_DIR / "requirements.txt").read_bytes() if (APP_DIR / "requirements.txt").exists() else b""
     backup = _backup_current()
     log.info(tr("גיבוי של הגרסה הנוכחית נשמר ב-%s"), backup)
+    changed: list[str] = []
     for info in members:
         target = (APP_DIR / info.filename).resolve()
         if APP_DIR not in target.parents:
             raise ValueError(tr("קובץ העדכון לא תקין"))
+        new_bytes = zf.read(info)
+        if not target.exists() or target.read_bytes() != new_bytes:
+            changed.append(info.filename.replace("\\", "/"))
         target.parent.mkdir(parents=True, exist_ok=True)
-        with zf.open(info) as src, open(target, "wb") as dst:
-            shutil.copyfileobj(src, dst)
+        target.write_bytes(new_bytes)
     new_req = (APP_DIR / "requirements.txt").read_bytes() if (APP_DIR / "requirements.txt").exists() else b""
     if new_req and new_req != old_req:
         log.info(tr("מתקין חבילות שהשתנו…"))
         subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", str(APP_DIR / "requirements.txt")],
                        check=False, timeout=600)
-    log.info(tr("גרסה %s הותקנה. צריך להפעיל את האפליקציה מחדש."), tag)
-    return {"installed": tag, "backup": str(backup), "sha256": hashlib.sha256(data).hexdigest(), "restart_required": True}
+    restart = restart_required(tag, changed, new_req != old_req)
+    if restart:
+        log.info(tr("גרסה %s הותקנה. צריך להפעיל את האפליקציה מחדש."), tag)
+    else:
+        log.info(tr("גרסה %s הותקנה. אפשר להחיל אותה בלי לסגור את האפליקציה."), tag)
+    return {"installed": tag, "backup": str(backup), "sha256": hashlib.sha256(data).hexdigest(),
+            "restart_required": restart, "changed": len(changed)}
+
+
+# Files the open window itself runs: when one of them changes, the whole app has to be opened again.
+WINDOW_FILES = {"app.py"}
+# The first version whose service can be reloaded in place (so it can take over the same port and token).
+FIRST_LIVE_RELOAD = (1, 0, 13)
+
+
+def restart_required(tag: str, changed: list[str], packages_changed: bool) -> bool:
+    """A "big" update needs the app reopened: the window's own code changed, Python packages changed, or the
+    installed version is too old to take over in place (going back to an old version)."""
+    if parse_version(tag) < FIRST_LIVE_RELOAD:
+        return True
+    return packages_changed or any(name in WINDOW_FILES for name in changed)
