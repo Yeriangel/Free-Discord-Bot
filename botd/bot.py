@@ -1,0 +1,313 @@
+"""BotManager: starts/stops the discord.py client inside the service process."""
+
+from .i18n import tr
+import asyncio
+import hashlib
+import json
+import logging
+import time
+
+import discord
+from discord.ext import commands
+
+from . import catalog, discord_rest, secrets_store
+from .bus import bus
+from .store import Store
+
+log = logging.getLogger("botd.bot")
+
+# Application flags that say a privileged intent is switched on in the Developer Portal
+FLAG_MEMBERS = (1 << 14) | (1 << 15)
+FLAG_MESSAGE_CONTENT = (1 << 18) | (1 << 19)
+
+NO_PINGS = discord.AllowedMentions.none()
+USER_PINGS = discord.AllowedMentions(everyone=False, roles=False, users=True, replied_user=False)
+
+
+def _plain(text) -> str:
+    """discord.py may wrap texts in locale_str; we want the plain source string."""
+    return str(getattr(text, "message", text) or "")
+
+
+class ManagedBot(commands.Bot):
+    def __init__(self, manager: "BotManager", available: dict):
+        intents = discord.Intents.default()
+        intents.members = available.get("members", False)
+        intents.message_content = available.get("message_content", False)
+        super().__init__(
+            command_prefix=commands.when_mentioned,
+            intents=intents,
+            help_command=None,
+            allowed_mentions=NO_PINGS,
+        )
+        self.manager = manager
+        self.store: Store = manager.store
+
+    # ---- helpers used by the module cogs ---------------------------------
+    def cfg(self, guild: discord.abc.Snowflake | None, key: str) -> dict | None:
+        """The module's config for this guild, or None if the module is off there."""
+        if guild is None:
+            return None
+        gid = str(guild.id)
+        if not self.store.module_enabled(gid, key):
+            return None
+        lang = self.store.guild_lang(gid)
+        config = catalog.merged_config(key, self.store.raw_config(gid, key), lang)
+        config["_lang"] = lang
+        return config
+
+    def lang(self, guild: discord.abc.Snowflake | None) -> str:
+        """The bot's language in this server (Hebrew by default)."""
+        return self.store.guild_lang(str(guild.id)) if guild is not None else "he"
+
+    def t(self, guild, text: str, **kw) -> str:
+        """Translate a bot message into the server's language."""
+        return tr(text, self.lang(guild), **kw)
+
+    async def send_log(self, guild: discord.Guild, embed: discord.Embed, event: str | None = None) -> None:
+        cfg = self.cfg(guild, "logs")
+        if not cfg or not cfg["channel_id"] or (event and not cfg.get(event, True)):
+            return
+        channel = guild.get_channel(int(cfg["channel_id"]))
+        if channel is None or not hasattr(channel, "send"):
+            return
+        try:
+            await channel.send(embed=embed, allowed_mentions=NO_PINGS)
+        except discord.HTTPException as exc:
+            log.warning(tr("לא הצלחתי לכתוב לערוץ הלוגים בשרת %s: %s"), guild.name, exc.text or exc.status)
+
+    # ---- lifecycle events -------------------------------------------------
+    async def setup_hook(self) -> None:
+        from .modules import COGS
+
+        for cog_cls in COGS:
+            await self.add_cog(cog_cls(self))
+        await self._sync_commands()
+
+    def _localize_commands(self) -> None:
+        """Slash command descriptions follow the app's UI language (Discord has no Hebrew/Arabic client locale)."""
+        from .i18n import ui_lang
+
+        lang = ui_lang()
+        for cmd in self.tree.get_commands():
+            src = cmd.extras.setdefault("src_description", _plain(cmd.description))
+            cmd.description = tr(src, lang)[:100]
+            for param in getattr(cmd, "_params", {}).values():
+                if not hasattr(param, "_src_description"):
+                    param._src_description = _plain(param.description)
+                param.description = tr(param._src_description, lang)[:100]
+                srcs = cmd.extras.setdefault(f"src_choices:{param.name}", [_plain(c.name) for c in param.choices or []])
+                for choice, src in zip(param.choices or [], srcs):
+                    choice.name = tr(src, lang)[:100]
+
+    async def _sync_commands(self) -> None:
+        self._localize_commands()
+        try:
+            payload = [c.to_dict(self.tree) for c in self.tree.get_commands()]
+        except TypeError:  # older discord.py signature
+            payload = [c.to_dict() for c in self.tree.get_commands()]
+        digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+        key = f"commands_hash:{self.application_id}"
+        if self.store.get_kv(key) == digest:
+            return
+        try:
+            synced = await self.tree.sync()
+            self.store.set_kv(key, digest)
+            log.info(tr("נרשמו %d פקודות סלאש בדיסקורד"), len(synced))
+        except discord.HTTPException as exc:
+            log.warning(tr("רישום פקודות הסלאש נכשל: %s"), exc.text or exc.status)
+
+    async def on_ready(self) -> None:
+        await self.manager.apply_presence()
+        self.manager._sync_guilds(self)
+        self.manager._set_state("connected")
+        log.info(tr("מחובר כ-%s, ב-%d שרתים"), self.user, len(self.guilds))
+
+    async def on_resumed(self) -> None:
+        self.manager._set_state("connected")
+        log.info(tr("החיבור חודש"))
+
+    async def on_disconnect(self) -> None:
+        if self.manager.state == "connected":
+            self.manager._set_state("reconnecting")
+            log.warning(tr("החיבור לדיסקורד נותק, מנסה להתחבר מחדש…"))
+
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        log.info(tr("הבוט נוסף לשרת %s"), guild.name)
+        self.manager._sync_guilds(self)
+
+    async def on_guild_remove(self, guild: discord.Guild) -> None:
+        log.info(tr("הבוט הוסר מהשרת %s"), guild.name)
+        self.manager._publish_status()
+
+    async def on_guild_update(self, _before: discord.Guild, _after: discord.Guild) -> None:
+        self.manager._sync_guilds(self)
+
+
+class BotManager:
+    def __init__(self, store: Store):
+        self.store = store
+        self.bot: ManagedBot | None = None
+        self.task: asyncio.Task | None = None
+        self.state = "stopped"  # stopped | connecting | connected | reconnecting | stopping | error
+        self.error = ""
+        self.started_at: float | None = None
+        self.intents: dict | None = None
+        self._lock = asyncio.Lock()
+
+    # ---- status ----------------------------------------------------------
+    def status(self) -> dict:
+        bot = self.bot
+        user = None
+        if bot is not None and bot.user is not None:
+            user = {
+                "id": str(bot.user.id),
+                "name": bot.user.name,
+                "avatar": bot.user.display_avatar.with_size(128).url,
+            }
+        latency = None
+        if bot is not None and self.state == "connected" and bot.latency == bot.latency:  # not NaN
+            latency = round(bot.latency * 1000)
+        return {
+            "state": self.state,
+            "error": self.error,
+            "user": user,
+            "guild_count": len(bot.guilds) if bot is not None and self.state == "connected" else None,
+            "latency_ms": latency,
+            "started_at": self.started_at,
+            "intents": self.intents,
+        }
+
+    def _publish_status(self) -> None:
+        bus.publish({"type": "status", "status": self.status()})
+
+    def _set_state(self, state: str, error: str = "") -> None:
+        self.state = state
+        self.error = error
+        self._publish_status()
+
+    def _sync_guilds(self, bot: commands.Bot) -> None:
+        for guild in bot.guilds:
+            self.store.upsert_guild(str(guild.id), guild.name, guild.icon.url if guild.icon else "")
+        self._publish_status()
+
+    def live_guild_ids(self) -> set[str]:
+        if self.bot is None or self.state != "connected":
+            return set()
+        return {str(g.id) for g in self.bot.guilds}
+
+    def live_guild(self, gid: str) -> discord.Guild | None:
+        if self.bot is None or self.state != "connected" or not gid.isdigit():
+            return None
+        return self.bot.get_guild(int(gid))
+
+    def guild_objects(self, gid: str) -> dict | None:
+        """Channels and roles for setting pickers (only while connected)."""
+        guild = self.live_guild(gid)
+        if guild is None:
+            return None
+        me = guild.me
+        perms = me.guild_permissions if me else discord.Permissions.none()
+        return {
+            "text_channels": [
+                {"id": str(c.id), "name": c.name, "category": c.category.name if c.category else ""}
+                for c in guild.text_channels
+            ],
+            "roles": [
+                {"id": str(r.id), "name": r.name, "assignable": me is not None and r < me.top_role}
+                for r in reversed(guild.roles)
+                if not r.is_default() and not r.managed
+            ],
+            "bot_permissions": [k for k in catalog.PERM_BITS if getattr(perms, k, False)],
+        }
+
+    # ---- presence (status + activity) -------------------------------------
+    @staticmethod
+    def build_presence(pr: dict):
+        status = {"online": discord.Status.online, "idle": discord.Status.idle,
+                  "dnd": discord.Status.dnd, "invisible": discord.Status.invisible}[pr.get("status", "online")]
+        text, kind = pr.get("text", ""), pr.get("activity", "none")
+        activity = None
+        if kind == "playing":
+            activity = discord.Game(name=text)
+        elif kind == "streaming":
+            activity = discord.Streaming(name=text, url=pr.get("url", ""))
+        elif kind in ("listening", "watching", "competing"):
+            activity = discord.Activity(type=getattr(discord.ActivityType, kind), name=text)
+        elif kind == "custom":
+            activity = discord.CustomActivity(name=text)
+        return status, activity
+
+    async def apply_presence(self) -> None:
+        if self.bot is None or self.bot.ws is None:
+            return
+        status, activity = self.build_presence(self.store.get_settings()["presence"])
+        try:
+            await self.bot.change_presence(status=status, activity=activity)
+        except Exception as exc:  # noqa: BLE001
+            log.warning(tr("עדכון הסטטוס נכשל: %s"), exc)
+
+    # ---- lifecycle -------------------------------------------------------
+    async def _detect_intents(self, token: str) -> dict:
+        try:
+            app = await discord_rest.get_application(token)
+        except discord_rest.DiscordAPIError:
+            return {"members": False, "message_content": False}
+        flags = int(app.get("flags") or 0)
+        found = {"members": bool(flags & FLAG_MEMBERS), "message_content": bool(flags & FLAG_MESSAGE_CONTENT)}
+        missing = [catalog.INTENT_LABELS[k] for k, v in found.items() if not v]
+        if missing:
+            log.warning(tr("ב-Developer Portal כבויים: %s. מודולים שצריכים אותם לא יעבדו."), ", ".join(missing))
+        return found
+
+    async def start(self) -> None:
+        async with self._lock:
+            if self.task is not None and not self.task.done():
+                return
+            token = secrets_store.get("bot_token")
+            if not token:
+                raise ValueError(tr("לא הוגדר Bot Token. הוסף אותו בעמוד 'חיבור והגדרות'."))
+            self.started_at = time.time()
+            self._set_state("connecting")
+            log.info(tr("מפעיל את הבוט…"))
+            self.intents = await self._detect_intents(token)
+            self.bot = ManagedBot(self, self.intents)
+            self.task = asyncio.create_task(self._run(self.bot, token), name="discord-bot")
+
+    async def _run(self, bot: ManagedBot, token: str) -> None:
+        error = ""
+        try:
+            await bot.start(token, reconnect=True)
+        except discord.LoginFailure:
+            error = tr("הטוקן לא תקין. עדכן אותו בעמוד 'חיבור והגדרות'.")
+        except discord.PrivilegedIntentsRequired:
+            error = tr("חסרים Privileged Intents. הפעל אותם ב-Developer Portal, בלשונית Bot.")
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:  # noqa: BLE001 - report anything to the UI
+            log.exception(tr("הבוט נעצר בגלל שגיאה"))
+            error = tr("שגיאה: {error}", error=type(exc).__name__)
+        finally:
+            if not bot.is_closed():
+                await bot.close()
+            if error:
+                log.error(error)
+            else:
+                log.info(tr("הבוט כבוי"))
+            self.started_at = None
+            self._set_state("error" if error else "stopped", error)
+
+    async def stop(self) -> None:
+        async with self._lock:
+            task, bot = self.task, self.bot
+            if task is None or task.done():
+                self._set_state("stopped")
+                return
+            self._set_state("stopping")
+            log.info(tr("עוצר את הבוט…"))
+            if bot is not None:
+                await bot.close()
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=10)
+            except asyncio.TimeoutError:
+                task.cancel()

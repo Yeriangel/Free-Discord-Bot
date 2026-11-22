@@ -1,0 +1,68 @@
+# Free Discord Bot
+
+Hello, my name is Yeri, and I'm making a Discord bot inspired by MEE6, and it's **100% free**!
+
+Unlike the MEE6 bot, my bot is **open source** and you can download it from GitHub.
+You run it on your own computer and manage it from a desktop app, in Hebrew, English, Russian or Arabic.
+
+You can also connect the bot to the **Claude API** and talk with it using the model of your choice:
+**Haiku**, **Sonnet** or **Opus**. I recommend **Haiku**, because it uses the fewest credits.
+
+> **About cost:** the Claude API is billed separately from Claude Pro / Max subscriptions.
+> To use it you need API credits in the [Anthropic Console](https://console.anthropic.com/). Haiku is very cheap,
+> and the app shows an estimated cost and lets you set a daily limit.
+
+You can also ask it to do things inside the server, for example:
+- `@ClaudeBot timeout User12345`
+- `@ClaudeBot rename the chat to "💬│chat" and apply the same style to all channels, for example "🎧│VoiceChat" / "🗣️│Announce"`
+- `@ClaudeBot delete all the messages that include bad words (like "idiot")`
+
+Before doing anything, the bot shows exactly what it is going to do and waits for you to click **Confirm**.
+It only listens to the user ID you allowed, and only does what that user has permission to do in the server.
+(Turn this on in the app: **AI → Chat with Claude → Let Claude perform actions in the server**.)
+
+You can also just **reply** to the bot instead of mentioning it every time.
+
+**No Claude API? Don't worry:** the bot works just as well without it. Claude is only needed for the chat.
+
+(You can name the bot however you want. `@ClaudeBot` and `User12345` were just examples.)
+
+---
+
+## What it can do
+
+| Category | Modules |
+|---|---|
+| Essentials | Welcome & Goodbye (text or embed), Auto Role, Reaction Roles, AutoMod (10 rules, each with its own action), Warnings with automatic escalation, Restricted Channels, Moderation commands with confirm buttons, Audit Log, Levels (XP, role rewards, `/rank`, `/levels`) |
+| Server Management | Custom Commands (can give or remove roles), Automations (WHEN someone… IF… DO…, 11 events, 20 conditions, 12 actions, buttons, retry on failure) |
+| Games & Fun | Economy: custom currency, `/daily` with streaks, dice, guess, roulette, rock-paper-scissors, a shop, boosts |
+| AI | Chat with Claude (Haiku / Sonnet / Opus), server actions with confirmation |
+| App | Bot Personalizer (avatar, banner, status, activity), per-server profiles, invite link builder with minimal permissions, live logs, Ctrl+K search, online updates with rollback |
+
+Some modules are marked "coming soon" in the app (giveaways, tickets, polls, social alerts and more).
+
+## Install (Windows)
+
+1. Install [Python 3.13 or newer](https://www.python.org/downloads/).
+2. Download this repository (green **Code** button → **Download ZIP**) and unzip it.
+3. Double-click **`setup.cmd`** (first time only).
+4. Double-click **`start.cmd`**.
+5. In the app, open **Connection & Settings** and paste your own **Bot Token**
+   (from the [Discord Developer Portal](https://discord.com/developers/applications)),
+   and optionally your **Anthropic API key** and your **Discord user ID**.
+
+Your token and API key are stored in **Windows Credential Manager**, never in files or in git.
+Hebrew guide: [README.he.md](README.he.md).
+
+## Updates
+
+The app's **Updates** page checks this repository's Releases. The newest version is offered as an update,
+and every older version can be installed again ("go back"). A backup of your current version is kept,
+and your settings and data are not touched.
+
+Maintainers publish a version with `python tools/release.py 1.0.1 "what changed"`. Older release zips are moved
+into the `OldVersions` folder.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

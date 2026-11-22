@@ -1,0 +1,1589 @@
+"use strict";
+
+/* ===== session token (passed once in the URL fragment, never sent to the server in a URL) ===== */
+const TOKEN = (() => {
+  const fromHash = new URLSearchParams(location.hash.slice(1)).get("token");
+  if (fromHash) {
+    sessionStorage.setItem("botd-token", fromHash);
+    history.replaceState(null, "", location.pathname);
+    return fromHash;
+  }
+  return sessionStorage.getItem("botd-token") || "";
+})();
+
+const STATE_LABELS = {
+  stopped: "כבוי", connecting: "מתחבר…", connected: "מחובר", reconnecting: "מתחבר מחדש…",
+  stopping: "נעצר…", error: "שגיאה", offline: "השירות לא זמין",
+};
+
+const GENERAL_NAV = [
+  { page: "dashboard", icon: "◉", label: "לוח בקרה" },
+  { page: "connection", icon: "🔑", label: "חיבור והגדרות" },
+  { page: "profile", icon: "🖼", label: "פרופיל הבוט", sub: "Bot Personalizer" },
+  { page: "permissions", icon: "🛡", label: "הרשאות והזמנה" },
+  { page: "updates", icon: "⟳", label: "עדכונים" },
+];
+const CAT_ICONS = { essentials: "⭐", server_management: "🛠", utilities: "🧰", social: "📣", games: "🎮", ai: "✦" };
+const NONE_IMG = "data:image/gif;base64,R0lGODlhAQABAAAAACw=";
+
+const S = {
+  page: "dashboard",
+  status: { state: "offline" },
+  settings: null,
+  catalog: null,
+  guilds: [],
+  guildId: localStorage.getItem("botd-guild") || "",
+  guild: null,
+  logs: [],
+  logFilter: "ALL",
+  profile: null,
+  avatarDraft: null,
+  bannerDraft: null,
+  presenceDraft: null,
+  invite: null,
+  permSel: null,
+  updates: null,
+  dirty: false,
+  autos: null,
+  autoOpen: null,
+};
+
+/* ===== helpers ===== */
+const $ = (sel, root = document) => root.querySelector(sel);
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const mod = (key) => S.catalog && S.catalog.modules.find((m) => m.key === key);
+const permLabel = (k) => ((S.catalog && S.catalog.permissions.find((p) => p.key === k)) || { label: k }).label;
+
+class ApiError extends Error {
+  constructor(message, status, extra) { super(message); this.status = status; this.extra = extra || {}; }
+}
+
+async function api(method, path, body) {
+  let resp;
+  try {
+    resp = await fetch("/api" + path, {
+      method,
+      headers: { "Content-Type": "application/json", "X-Session-Token": TOKEN },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch {
+    throw new ApiError("אין חיבור לשירות הבוט", 0);
+  }
+  let data = null;
+  try { data = await resp.json(); } catch { /* empty */ }
+  if (!resp.ok) {
+    const d = data && data.detail;
+    const msg = (d && (d.message || (typeof d === "string" ? d : ""))) || t("שגיאה {status}", { status: resp.status });
+    throw new ApiError(msg, resp.status, d && typeof d === "object" ? d : {});
+  }
+  return data;
+}
+
+function toast(message, kind = "") {
+  const el = document.createElement("div");
+  el.className = "toast " + kind;
+  el.textContent = message;
+  $("#toasts").appendChild(el);
+  setTimeout(() => el.remove(), kind === "error" ? 7000 : 3500);
+}
+
+function confirmDialog(title, body, okLabel = "אישור", danger = true, checkLabel = "") {
+  return new Promise((resolve) => {
+    const modal = $("#modal");
+    $("#modal-title").textContent = title;
+    $("#modal-body").textContent = body;
+    const checkRow = $("#modal-check-row"), check = $("#modal-check");
+    check.checked = false;
+    checkRow.classList.toggle("hidden", !checkLabel);
+    $("#modal-check-label").textContent = checkLabel;
+    const ok = $("#modal-ok");
+    ok.textContent = okLabel;
+    ok.className = "btn " + (danger ? "btn-danger" : "btn-primary");
+    modal.classList.remove("hidden");
+    const done = (v) => {
+      modal.classList.add("hidden");
+      ok.onclick = null; $("#modal-cancel").onclick = null; modal.onclick = null;
+      resolve(checkLabel ? { ok: v, checked: check.checked } : v);
+    };
+    ok.onclick = () => done(true);
+    $("#modal-cancel").onclick = () => done(false);
+    modal.onclick = (e) => { if (e.target === modal) done(false); };
+  });
+}
+
+function fmtRetry(seconds) {
+  if (!seconds) return "";
+  const s = Math.ceil(seconds);
+  if (s < 60) return t("{n} שניות", { n: s });
+  const m = Math.ceil(s / 60);
+  return m < 60 ? t("{n} דקות", { n: m }) : t("{h} שעות ו-{m} דקות", { h: Math.floor(m / 60), m: m % 60 });
+}
+
+function errMessage(e) {
+  if (e instanceof ApiError && e.status === 429 && e.extra.retry_after) {
+    return t("{msg} אפשר לנסות שוב בעוד {time}.", { msg: e.message, time: fmtRetry(e.extra.retry_after) });
+  }
+  return e.message || String(e);
+}
+
+async function guarded(btn, fn) {
+  if (btn) btn.disabled = true;
+  try { return await fn(); }
+  catch (e) { toast(errMessage(e), "error"); }
+  finally { if (btn) btn.disabled = false; }
+}
+
+/* ===== translations (UI language; source strings are Hebrew) ===== */
+let I18N = { lang: "he", dir: "rtl", strings: {}, patterns: [], languages: [] };
+const HEB_RE = /[֐-׿]/;
+const N_ = (s) => s;
+
+function t(key, vars) {
+  let s = (I18N.lang !== "he" && I18N.strings[key]) || key;
+  if (vars) s = s.replace(/\{(\w+)\}/g, (m, k) => (k in vars ? vars[k] : m));
+  return s;
+}
+
+function buildPatterns(strings) {
+  const esc = (p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return Object.keys(strings)
+    .filter((k) => /\{\w+\}/.test(k) && k.replace(/\{\w+\}/g, "").trim().length > 1)
+    .map((k) => {
+      const names = [];
+      const body = k.split(/(\{\w+\})/).map((part) => {
+        const m = part.match(/^\{(\w+)\}$/);
+        if (m) { names.push(m[1]); return "([\\s\\S]+?)"; }
+        return esc(part);
+      }).join("");
+      return { re: new RegExp("^" + body + "$"), names, out: strings[k], len: k.length };
+    })
+    .sort((a, b) => b.len - a.len);
+}
+
+function trText(s) {
+  const core = s.trim();
+  if (!core || !HEB_RE.test(core)) return s;
+  let out = I18N.strings[core];
+  if (!out) {
+    for (const p of I18N.patterns) {
+      const m = core.match(p.re);
+      if (m) { out = p.out.replace(/\{(\w+)\}/g, (x, k) => { const i = p.names.indexOf(k); return i >= 0 ? m[i + 1] : x; }); break; }
+    }
+  }
+  return out ? s.replace(core, out) : s;
+}
+
+const SKIP_SEL = ".no-translate, script, style, textarea, .logs";
+function translateTextNode(node) {
+  const parent = node.parentElement;
+  if (!parent || parent.closest(SKIP_SEL)) return;
+  const next = trText(node.nodeValue);
+  if (next !== node.nodeValue) node.nodeValue = next;
+}
+
+function translateTree(root) {
+  if (I18N.lang === "he" || !root) return;
+  if (root.nodeType === 3) { translateTextNode(root); return; }
+  if (root.nodeType !== 1 || root.closest(SKIP_SEL)) return;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  nodes.forEach(translateTextNode);
+  const els = [root, ...root.querySelectorAll("[placeholder], [title]")];
+  for (const el of els) {
+    if (!el.getAttribute || el.closest(SKIP_SEL)) continue;
+    for (const attr of ["placeholder", "title"]) {
+      const v = el.getAttribute(attr);
+      if (v && HEB_RE.test(v)) { const nv = trText(v); if (nv !== v) el.setAttribute(attr, nv); }
+    }
+  }
+}
+
+const i18nObserver = new MutationObserver((muts) => {
+  if (I18N.lang === "he") return;
+  for (const m of muts) {
+    if (m.type === "characterData") translateTextNode(m.target);
+    else if (m.type === "attributes") translateTree(m.target);
+    else m.addedNodes.forEach((n) => translateTree(n));
+  }
+});
+
+async function loadI18n() {
+  const d = await api("GET", "/i18n");
+  I18N = { ...d, patterns: buildPatterns(d.strings) };
+  document.documentElement.lang = d.lang;
+  document.documentElement.dir = d.dir;
+  renderLangSelect();
+  if (d.lang !== "he") {
+    translateTree(document.body);
+    i18nObserver.observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["placeholder", "title"] });
+  }
+}
+
+function langOptions(selected) {
+  return (I18N.languages || []).map((l) => `<option value="${l.code}" ${l.code === selected ? "selected" : ""}>${esc(l.name)}</option>`).join("");
+}
+
+function renderLangSelect() {
+  const sel = $("#ui-lang");
+  if (sel) sel.innerHTML = langOptions(I18N.lang);
+}
+
+async function setUiLang(code) {
+  try {
+    await api("PUT", "/settings", { ui_lang: code });
+    location.reload();
+  } catch (e) { toast(errMessage(e), "error"); }
+}
+
+function guildLangSelect() {
+  if (!S.guild) return "";
+  return `<label class="row guild-lang no-translate-host"><span class="label">${esc(t("שפת הבוט בשרת הזה"))}</span>
+    <select id="guild-lang" class="no-translate" style="width:auto">${langOptions(S.guild.language || "he")}</select></label>`;
+}
+
+/* ===== live events ===== */
+function connectWS() {
+  const ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen = () => ws.send(JSON.stringify({ token: TOKEN }));
+  ws.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
+    if (msg.type === "backlog") { S.logs = msg.logs; renderLogs(); }
+    else if (msg.type === "log") { S.logs.push(msg); if (S.logs.length > 1000) S.logs.shift(); appendLog(msg); }
+    else if (msg.type === "status") { onStatus(msg.status); }
+  };
+  ws.onclose = () => { onStatus({ state: "offline" }); setTimeout(connectWS, 2000); };
+}
+
+function onStatus(status) {
+  const prev = S.status.state;
+  S.status = status;
+  renderStatus();
+  if (S.page === "dashboard") renderDashboardStats();
+  if (status.state === "connected" && prev !== "connected") refreshGuilds();
+  else if (status.state !== prev && prev === "connected" && !S.dirty) loadGuild();
+  if (status.state === "error" && prev !== "error" && status.error) toast(status.error, "error");
+}
+
+function renderStatus() {
+  const st = S.status.state || "offline";
+  $("#status-pill").className = "pill pill-" + st;
+  $("#status-text").textContent = t(STATE_LABELS[st] || st);
+  const btn = $("#power-btn");
+  const running = ["connecting", "connected", "reconnecting"].includes(st);
+  btn.textContent = running ? "כבה בוט" : "הפעל בוט";
+  btn.className = "btn " + (running ? "btn-danger" : "btn-primary");
+  btn.disabled = st === "stopping" || st === "offline";
+  if (S.status.user) {
+    $("#brand-avatar").src = S.status.user.avatar;
+    $("#brand-name").textContent = S.status.user.name;
+  }
+}
+
+/* ===== data loading ===== */
+async function refreshGuilds() {
+  try { S.guilds = await api("GET", "/guilds"); } catch (e) { toast(errMessage(e), "error"); return; }
+  if (!S.guilds.find((g) => g.id === S.guildId)) S.guildId = S.guilds[0] ? S.guilds[0].id : "";
+  renderGuildSelect();
+  await loadGuild();
+}
+
+async function loadGuild() {
+  S.guild = null;
+  if (S.guildId) {
+    localStorage.setItem("botd-guild", S.guildId);
+    try { S.guild = await api("GET", "/guilds/" + S.guildId); } catch (e) { toast(errMessage(e), "error"); }
+  }
+  if (S.page.startsWith("cat:") || S.page.startsWith("mod:")) render();
+}
+
+function renderGuildSelect() {
+  const sel = $("#guild-select");
+  const add = `<option value="__add">➕ ${t("הוסף שרת חדש…")}</option>`;
+  if (!S.guilds.length) {
+    sel.innerHTML = `<option value="">${t("אין שרתים עדיין")}</option>${add}`;
+    return;
+  }
+  sel.classList.add("no-translate");
+  sel.innerHTML = S.guilds.map((g) =>
+    `<option value="${esc(g.id)}" ${g.id === S.guildId ? "selected" : ""}>${esc(g.name)}${g.present === false ? " " + t("(הבוט לא בשרת)") : ""}</option>`
+  ).join("") + add;
+}
+
+/* ===== navigation ===== */
+function navItems() {
+  const cats = S.catalog ? S.catalog.categories.map((c) => ({ page: "cat:" + c.key, icon: CAT_ICONS[c.key] || "•", label: c.label, sub: c.en })) : [];
+  return [{ group: "כללי" }, ...GENERAL_NAV, { group: "מודולים" }, ...cats];
+}
+
+function currentNavPage() {
+  if (S.page.startsWith("mod:")) { const m = mod(S.page.slice(4)); return m ? "cat:" + m.category : S.page; }
+  return S.page;
+}
+
+function renderNav() {
+  const active = currentNavPage();
+  $("#nav").innerHTML = navItems().map((n) => n.group
+    ? `<div class="nav-group">${esc(n.group)}</div>`
+    : `<button class="nav-item ${active === n.page ? "active" : ""}" data-nav="${n.page}">
+         <span class="icon">${n.icon}</span>
+         <span>${esc(n.label)}${n.sub ? `<span class="sub">${esc(n.sub)}</span>` : ""}</span>
+       </button>`).join("");
+}
+
+async function go(page) {
+  if (S.dirty && page !== S.page) {
+    if (!(await confirmDialog("יש שינויים שלא נשמרו", "לצאת מהדף בלי לשמור? השינויים יאבדו.", "צא בלי לשמור"))) return;
+  }
+  setDirty(false);
+  S.page = page;
+  renderNav();
+  render();
+  $("#main").scrollTop = 0;
+}
+
+function setDirty(v) {
+  S.dirty = v;
+  $("#savebar").classList.toggle("hidden", !v);
+}
+
+function pageTitle() {
+  if (S.page.startsWith("mod:")) { const m = mod(S.page.slice(4)); return m ? m.label : ""; }
+  const item = navItems().find((n) => n.page === S.page);
+  return item ? item.label : "";
+}
+
+function render() {
+  $("#page-title").textContent = pageTitle();
+  const main = $("#main");
+  const p = S.page;
+  if (p === "dashboard") { main.innerHTML = viewDashboard(); renderDashboardStats(); renderLogs(); }
+  else if (p === "connection") main.innerHTML = viewConnection();
+  else if (p === "profile") { main.innerHTML = viewProfile(); loadProfile(); }
+  else if (p === "permissions") main.innerHTML = viewPermissions();
+  else if (p === "updates") { main.innerHTML = viewUpdates(); loadUpdates(); }
+  else if (p.startsWith("cat:")) main.innerHTML = viewCategory(p.slice(4));
+  else if (p.startsWith("mod:")) { main.innerHTML = viewModulePage(p.slice(4)); afterModuleRender(p.slice(4)); }
+}
+
+/* ===== dashboard ===== */
+function viewDashboard() {
+  return `
+    <div class="section"><div id="dash-stats" class="grid grid-4"></div></div>
+    <div id="dash-notice"></div>
+    <div class="section">
+      <div class="row" style="margin-bottom:10px">
+        <div class="section-title">לוגים חיים</div>
+        <div class="spacer"></div>
+        <select id="log-filter" style="width:auto">
+          ${["ALL", "INFO", "WARNING", "ERROR"].map((l) => `<option ${S.logFilter === l ? "selected" : ""} value="${l}">${l === "ALL" ? "הכל" : l}</option>`).join("")}
+        </select>
+        <button class="btn btn-sm" data-action="clear-logs">נקה תצוגה</button>
+      </div>
+      <div id="logs" class="logs"></div>
+    </div>`;
+}
+
+function renderDashboardStats() {
+  const box = $("#dash-stats");
+  if (!box) return;
+  const st = S.status;
+  const stat = (label, value) => `<div class="card"><div class="stat-label">${esc(label)}</div><div class="stat-value">${value}</div></div>`;
+  box.innerHTML =
+    stat("מצב", esc(t(STATE_LABELS[st.state] || st.state))) +
+    stat("בוט", st.user ? esc(st.user.name) : "—") +
+    stat("שרתים", st.guild_count ?? "—") +
+    stat("השהיה", st.latency_ms != null ? `${st.latency_ms}ms` : "—");
+  const notice = $("#dash-notice");
+  if (st.state === "error" && st.error) notice.innerHTML = `<div class="notice error">${esc(st.error)}</div>`;
+  else if (S.settings && !S.settings.secrets.bot_token.set) notice.innerHTML = `<div class="notice warn">${t('עוד לא הוגדר Bot Token. עבור ל<a href="#" data-nav="connection">חיבור והגדרות</a> כדי להוסיף אותו.')}</div>`;
+  else notice.innerHTML = "";
+}
+
+function logLineHTML(l) {
+  const ts = new Date(l.ts * 1000).toLocaleTimeString("he-IL", { hour12: false });
+  return `<div class="log-line log-${esc(l.level)}"><span class="ts">${ts}</span> <span class="lvl">${esc(l.level)}</span> <span class="msg">${esc(l.msg)}</span></div>`;
+}
+const logVisible = (l) => S.logFilter === "ALL" || l.level === S.logFilter || (S.logFilter === "ERROR" && l.level === "CRITICAL");
+
+function renderLogs() {
+  const box = $("#logs");
+  if (!box) return;
+  box.innerHTML = S.logs.filter(logVisible).map(logLineHTML).join("") || `<div class="muted">אין לוגים עדיין</div>`;
+  box.scrollTop = box.scrollHeight;
+}
+
+function appendLog(l) {
+  const box = $("#logs");
+  if (!box || !logVisible(l)) return;
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  if (box.firstElementChild && box.firstElementChild.classList.contains("muted")) box.innerHTML = "";
+  box.insertAdjacentHTML("beforeend", logLineHTML(l));
+  while (box.childElementCount > 1000) box.firstElementChild.remove();
+  if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
+/* ===== connection & settings ===== */
+function secretField(name, label, hint) {
+  const info = S.settings.secrets[name];
+  return `
+    <div class="card section">
+      <div class="row" style="margin-bottom:10px">
+        <h3>${esc(label)}</h3>
+        ${info.set ? `<span class="badge badge-ok">שמור ${esc(info.hint)}</span>` : `<span class="badge">לא הוגדר</span>`}
+      </div>
+      <p class="desc" style="margin-bottom:12px">${hint}</p>
+      <div class="input-group">
+        <input type="password" id="secret-${name}" autocomplete="off" spellcheck="false" placeholder="${info.set ? "הדבק ערך חדש כדי להחליף" : "הדבק כאן"}">
+        <button class="btn" data-action="toggle-show" data-target="secret-${name}">הצג</button>
+        <button class="btn btn-primary" data-action="save-secret" data-name="${name}">שמור</button>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn btn-sm" data-action="test-secret" data-name="${name}" ${info.set ? "" : "disabled"}>בדוק חיבור</button>
+        <button class="btn btn-sm btn-ghost" data-action="delete-secret" data-name="${name}" data-label="${esc(label)}" ${info.set ? "" : "disabled"}>מחק</button>
+        <span class="muted small">נשמר ב-Windows Credential Manager. הערך המלא לא מוצג אחרי השמירה.</span>
+      </div>
+    </div>`;
+}
+
+function toggleRow(key, label, checked) {
+  return `<div class="row" style="padding:8px 0">
+      <label class="switch"><input type="checkbox" data-setting="${key}" ${checked ? "checked" : ""}><span class="slider"></span></label>
+      <span>${esc(label)}</span></div>`;
+}
+
+function viewConnection() {
+  if (!S.settings) return `<div class="empty">טוען…</div>`;
+  const s = S.settings.settings;
+  return `
+    <div class="card section">
+      <h3>שפת הממשק</h3>
+      <p class="desc" style="margin-bottom:10px">שפת האפליקציה. את שפת ההודעות של הבוט בוחרים לכל שרת בנפרד, בראש עמודי המודולים.</p>
+      <select id="ui-lang-2" class="no-translate" style="width:auto">${langOptions(I18N.lang)}</select>
+    </div>
+    ${secretField("bot_token", "Bot Token", t('מ-<a href="https://discord.com/developers/applications" target="_blank">Developer Portal</a>, בלשונית Bot, לוחצים Reset Token.'))}
+    ${secretField("anthropic_key", "Anthropic API Key", t('מ-<a href="https://console.anthropic.com/settings/keys" target="_blank">Anthropic Console</a>. משמש לצ\'אט עם Claude.'))}
+    <div class="card section">
+      <h3>מי מורשה לדבר עם הבוט</h3>
+      <p class="desc" style="margin-bottom:14px">לחיצה ימנית על המשתמש או על הערוץ בדיסקורד, ואז "העתק מזהה". צריך להפעיל קודם מצב מפתחים בהגדרות דיסקורד, תחת מתקדם.</p>
+      <div class="grid" style="grid-template-columns:1fr 1fr">
+        <div class="field"><span class="label">User ID מורשה</span><input type="text" class="ltr" id="allowed_user_id" value="${esc(s.allowed_user_id)}" placeholder="123456789012345678"></div>
+        <div class="field"><span class="label">ערוץ מורשה (לא חובה)</span><input type="text" class="ltr" id="allowed_channel_id" value="${esc(s.allowed_channel_id)}" placeholder="ריק = כל ערוץ ו-DM"></div>
+      </div>
+      <button class="btn btn-primary" data-action="save-ids">שמור</button>
+    </div>
+    <div class="card section">
+      <h3>התנהגות</h3>
+      ${toggleRow("autostart_bot", "להפעיל את הבוט אוטומטית כשהשירות עולה", s.autostart_bot)}
+      ${toggleRow("keep_running_on_close", "להשאיר את הבוט רץ ברקע כשסוגרים את החלון", s.keep_running_on_close)}
+    </div>
+    <div class="notice">
+      ${t("<b>Privileged Intents:</b> מודולים כמו ברוכים הבאים ואוטומוד צריכים את Server Members Intent ואת Message Content Intent. מפעילים אותם ידנית ב-Developer Portal, בלשונית Bot. האפליקציה לא יכולה להפעיל אותם בשבילך.")}
+    </div>`;
+}
+
+/* ===== bot profile (Bot Personalizer) ===== */
+const STATUS_LABELS = { online: N_("מחובר"), idle: N_("לא פעיל"), dnd: N_("לא להפריע"), invisible: N_("בלתי נראה") };
+const ACTIVITY_LABELS = {
+  none: N_("ללא"), playing: N_("משחק ב"), streaming: N_("משדר"), listening: N_("מאזין ל"),
+  watching: N_("צופה ב"), competing: N_("מתחרה ב"), custom: N_("מותאם אישית"),
+};
+
+function presenceDraft() {
+  if (!S.presenceDraft) S.presenceDraft = { ...((S.profile && S.profile.presence) || { status: "online", activity: "none", text: "", url: "" }) };
+  return S.presenceDraft;
+}
+
+function viewProfilePreview() {
+  const p = S.profile || {};
+  const pr = presenceDraft();
+  const name = esc(($("#bot-username") && $("#bot-username").value) || p.username || "Bot");
+  const avatar = esc(S.avatarDraft || p.avatar_url || NONE_IMG);
+  const banner = S.bannerDraft || p.banner_url;
+  const act = pr.activity !== "none" && pr.text
+    ? `<div class="pv-activity"><div class="muted small">${esc(t(ACTIVITY_LABELS[pr.activity]))}</div><b class="no-translate">${esc(pr.text)}</b></div>` : "";
+  return `
+    <div class="field"><span class="label">${esc(t("תצוגה ברשימת החברים"))}</span>
+      <div class="pv-member">
+        <div class="pv-avatar-wrap"><img src="${avatar}" alt=""><span class="pv-dot ${pr.status}"></span></div>
+        <div><div class="row" style="gap:6px"><b class="no-translate">${name}</b><span class="pv-app">APP</span></div>
+          <div class="muted small no-translate">${pr.activity !== "none" ? esc(pr.text) : ""}</div></div>
+      </div>
+    </div>
+    <div class="field"><span class="label">${esc(t("תצוגת פרופיל"))}</span>
+      <div class="pv-profile">
+        <div class="pv-banner" style="${banner ? `background-image:url('${esc(banner)}')` : ""}"></div>
+        <div class="pv-avatar-wrap big"><img src="${avatar}" alt=""><span class="pv-dot ${pr.status}"></span></div>
+        <div class="pv-body"><div class="row" style="gap:6px"><b class="no-translate" style="font-size:17px">${name}</b><span class="pv-app">APP</span></div>
+          ${act}</div>
+      </div>
+    </div>`;
+}
+
+function viewProfile() {
+  const p = S.profile;
+  const pr = presenceDraft();
+  const statusOpts = Object.entries(STATUS_LABELS).map(([k, v]) => `<option value="${k}" ${k === pr.status ? "selected" : ""}>${esc(t(v))}</option>`).join("");
+  const actOpts = Object.entries(ACTIVITY_LABELS).map(([k, v]) => `<option value="${k}" ${k === pr.activity ? "selected" : ""}>${esc(t(v))}</option>`).join("");
+  return `
+    <div class="card section personalizer">
+      <div class="pz-col">
+        <div class="field"><span class="label">אייקון</span>
+          <label class="pz-icon file-btn"><img id="avatar-preview" alt="" src="${esc(S.avatarDraft || (p && p.avatar_url) || NONE_IMG)}">
+            <input type="file" id="avatar-file" accept="image/png,image/jpeg,image/gif,image/webp"><span class="pz-edit">✎</span></label>
+          ${S.avatarDraft ? `<button class="btn btn-sm btn-ghost" data-action="discard-avatar">בטל תמונה</button>` : ""}
+        </div>
+        <div class="field"><span class="label">באנר (רקע)</span>
+          <label class="pz-banner file-btn" style="${S.bannerDraft || (p && p.banner_url) ? `background-image:url('${esc(S.bannerDraft || p.banner_url)}')` : ""}">
+            <input type="file" id="banner-file" accept="image/png,image/jpeg,image/gif,image/webp"><span class="pz-edit">✎</span></label>
+          ${S.bannerDraft ? `<button class="btn btn-sm btn-ghost" data-action="discard-banner">בטל באנר</button>` : ""}
+          <span class="hint">מומלץ 680×240. PNG, JPG, GIF או WEBP, עד 8MB</span>
+        </div>
+      </div>
+      <div class="pz-col grow">
+        <div class="field"><span class="label">שם הבוט</span>
+          <input type="text" id="bot-username" maxlength="32" value="${esc(p ? p.username : "")}" ${p ? "" : "disabled"}>
+          <span class="hint">2–32 תווים. דיסקורד מאפשר לשנות שם רק כמה פעמים בשעה.</span></div>
+        <div class="field"><span class="label">סטטוס הבוט</span><select id="pr-status">${statusOpts}</select></div>
+        <div class="row" style="align-items:flex-start">
+          <div class="field grow"><span class="label">סוג פעילות</span><select id="pr-activity">${actOpts}</select></div>
+          <div class="field grow"><span class="label">טקסט הסטטוס</span><input type="text" id="pr-text" maxlength="128" value="${esc(pr.text)}" ${pr.activity === "none" ? "disabled" : ""}></div>
+        </div>
+        ${pr.activity === "streaming" ? `<div class="field"><span class="label">קישור לשידור (Twitch או YouTube)</span><input type="text" class="ltr" id="pr-url" value="${esc(pr.url)}" placeholder="https://twitch.tv/..."></div>` : ""}
+        <span class="hint">הסטטוס והפעילות מתעדכנים מיד כשהבוט מחובר. דיסקורד מגביל החלפת תמונה ובאנר לפעמיים בערך בשעה.</span>
+        <div class="row" style="margin-top:12px"><button class="btn btn-primary" data-action="save-profile" ${p ? "" : "disabled"}>שמור שינויים</button></div>
+      </div>
+      <div class="pz-col pz-preview" id="pz-preview">${viewProfilePreview()}</div>
+    </div>
+    <div id="profile-msg"></div>`;
+}
+
+function refreshProfilePreview() { const box = $("#pz-preview"); if (box) box.innerHTML = viewProfilePreview(); }
+
+async function loadProfile() {
+  try {
+    const p = await api("GET", "/profile");
+    const changed = !S.profile || S.profile.username !== p.username || S.profile.avatar_url !== p.avatar_url;
+    S.profile = p;
+    if (changed && S.page === "profile") { S.presenceDraft = null; $("#main").innerHTML = viewProfile(); }
+  } catch (e) {
+    const box = $("#profile-msg");
+    if (box) box.innerHTML = `<div class="notice error">${esc(errMessage(e))}</div>`;
+  }
+}
+
+/* ===== updates ===== */
+function viewUpdates() {
+  const u = S.updates;
+  if (!u) return `<div class="empty">טוען…</div>`;
+  const list = u.releases.length ? u.releases.map((r) => `
+      <div class="card section release ${r.is_current ? "current" : ""}">
+        <div class="row">
+          <h3 class="ltr" style="margin:0">${esc(r.tag)}</h3>
+          ${r === u.releases[0] ? `<span class="badge badge-ok">${esc(t("הכי חדשה"))}</span>` : ""}
+          ${r.is_current ? `<span class="badge">${esc(t("הגרסה שלך"))}</span>` : ""}
+          ${r.prerelease ? `<span class="badge badge-soon">${esc(t("גרסת ניסיון"))}</span>` : ""}
+          <span class="muted small">${r.published ? new Date(r.published).toLocaleDateString() : ""}</span>
+          <div class="spacer"></div>
+          ${r.is_current ? "" : r.zip_url
+            ? `<button class="btn ${r.is_newer ? "btn-primary" : ""}" data-action="install-version" data-tag="${esc(r.tag)}" data-newer="${r.is_newer ? 1 : 0}">${esc(r.is_newer ? t("עדכן לגרסה הזו") : t("חזור לגרסה הזו"))}</button>`
+            : `<span class="muted small">${esc(t("אין קובץ התקנה"))}</span>`}
+        </div>
+        ${r.notes ? `<pre class="release-notes no-translate">${esc(r.notes)}</pre>` : ""}
+      </div>`).join("") : `<div class="muted small">${esc(t("לא נמצאו גרסאות במאגר."))}</div>`;
+  return `
+    <div class="card section">
+      <div class="row"><h3 style="margin:0">${esc(t("הגרסה המותקנת:"))} <span class="ltr">${esc(u.version)}</span></h3><div class="spacer"></div>
+        <button class="btn" data-action="check-updates">${esc(t("בדוק עדכונים"))}</button></div>
+      <div class="field" style="margin-top:14px"><span class="label">${esc(t("מאגר GitHub לעדכונים"))}</span>
+        <div class="input-group"><input type="text" id="update-repo" class="ltr" value="${esc(u.repo)}" placeholder="owner/Free-Discord-Bot">
+          <button class="btn btn-primary" data-action="save-update-repo">${esc(t("שמור"))}</button></div>
+        <span class="hint">${esc(t("האפליקציה בודקת את ה-Releases במאגר. הגרסה החדשה ביותר מוצגת למעלה, וכל הגרסאות הקודמות זמינות לחזרה ידנית."))}</span></div>
+      ${u.error ? `<div class="notice error">${esc(u.error)}</div>` : ""}
+    </div>
+    ${u.repo ? list : ""}`;
+}
+
+async function loadUpdates() {
+  try { S.updates = await api("GET", "/updates"); } catch (e) { toast(errMessage(e), "error"); return; }
+  if (S.page === "updates") $("#main").innerHTML = viewUpdates();
+}
+
+/* ===== permissions & invite ===== */
+function viewPermissions() {
+  if (!S.catalog) return `<div class="empty">טוען…</div>`;
+  if (!S.permSel) S.permSel = new Set(S.catalog.recommended_permissions);
+  const perms = S.catalog.permissions.map((p) => `
+    <label class="perm ${p.dangerous ? "danger" : ""}">
+      <input type="checkbox" data-perm="${p.key}" ${S.permSel.has(p.key) ? "checked" : ""}>
+      <span>${esc(p.label)}</span>
+      ${p.key === "administrator" ? `<span class="badge badge-danger">מסוכן</span>` : ""}
+    </label>`).join("");
+  const guildOpts = [`<option value="">אבחר בדיסקורד</option>`]
+    .concat(S.guilds.map((g) => `<option value="${esc(g.id)}">${esc(g.name)}</option>`)).join("");
+  return `
+    <div class="notice">${t("בוט לא יכול לתת לעצמו הרשאות. האפליקציה רק יוצרת קישור הזמנה: אתה פותח אותו, בוחר שרת ולוחץ <b>Authorize</b> בדיסקורד. ברירת המחדל היא ההרשאות המינימליות שהמודולים הפעילים צריכים. ככה גם מוסיפים את הבוט לשרת חדש.")}</div>
+    <div class="card section">
+      <div class="row" style="margin-bottom:12px">
+        <h3>הרשאות</h3><div class="spacer"></div>
+        <button class="btn btn-sm" data-action="perm-recommended">רק מה שהמודולים צריכים</button>
+        <button class="btn btn-sm btn-ghost" data-action="perm-none">נקה הכל</button>
+      </div>
+      <div class="perm-list">${perms}</div>
+    </div>
+    <div class="card section">
+      <h3>קישור הזמנה</h3>
+      <div class="row" style="margin-top:10px">
+        <select id="invite-guild" class="no-translate" style="width:auto;min-width:220px">${guildOpts}</select>
+        <button class="btn btn-primary" data-action="make-invite">צור קישור</button>
+      </div>
+      ${S.invite ? `<div class="invite-box">${esc(S.invite.url)}</div>
+        <div class="row" style="margin-top:10px">
+          <a class="btn" href="${esc(S.invite.url)}" target="_blank" rel="noopener">פתח בדפדפן</a>
+          <button class="btn" data-action="copy-invite">העתק</button>
+          <span class="muted small ltr">permissions=${esc(S.invite.permissions_value)}</span>
+        </div>` : ""}
+    </div>`;
+}
+
+/* ===== pickers & field renderers ===== */
+function channelPicker(attrs, value, objects, emptyLabel = "ללא") {
+  if (!objects) return `<input type="text" class="ltr" ${attrs} value="${esc(value)}" placeholder="מזהה ערוץ (הפעל את הבוט כדי לבחור מרשימה)">`;
+  const opts = [`<option value="">${esc(emptyLabel)}</option>`].concat(objects.text_channels.map((c) =>
+    `<option value="${esc(c.id)}" ${c.id === value ? "selected" : ""}># ${esc(c.name)}${c.category ? ` · ${esc(c.category)}` : ""}</option>`));
+  return `<select ${attrs}>${opts.join("")}</select>`;
+}
+
+function rolePicker(attrs, value, objects, emptyLabel = "בחר תפקיד") {
+  if (!objects) return `<input type="text" class="ltr" ${attrs} value="${esc(value)}" placeholder="מזהה תפקיד">`;
+  const opts = [`<option value="">${esc(emptyLabel)}</option>`].concat(objects.roles.map((r) =>
+    `<option value="${esc(r.id)}" ${r.id === value ? "selected" : ""} ${r.assignable ? "" : "disabled"}>@${esc(r.name)}${r.assignable ? "" : " (מעל תפקיד הבוט)"}</option>`));
+  return `<select ${attrs}>${opts.join("")}</select>`;
+}
+
+function multiPicker(fkey, values, items, kind) {
+  if (!items) return `<input type="text" class="ltr" data-field="${fkey}" data-ftype="ids" value="${esc(values.join(", "))}" placeholder="מזהים מופרדים בפסיקים (הפעל את הבוט כדי לבחור מרשימה)">`;
+  if (!items.length) return `<div class="muted small">אין פריטים</div>`;
+  return `<div class="multi" data-field="${fkey}" data-ftype="multi">${items.map((it) => `
+      <label class="multi-item ${kind === "role" && !it.assignable ? "disabled" : ""}">
+        <input type="checkbox" value="${esc(it.id)}" ${values.includes(it.id) ? "checked" : ""}>
+        <span>${kind === "role" ? "@" : "# "}${esc(it.name)}</span>
+      </label>`).join("")}</div>`;
+}
+
+function simpleInput(f, value, attrs, o) {
+  switch (f.type) {
+    case "number": return `<input type="text" inputmode="numeric" class="ltr narrow" ${attrs} value="${esc(value)}">`;
+    case "date": return `<input type="date" class="ltr" ${attrs} value="${esc(value)}">`;
+    case "select": return `<select ${attrs}>${f.options.map(([v, l]) => `<option value="${esc(v)}" ${v === value ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
+    case "channel": return channelPicker(attrs, value, o);
+    case "role": return rolePicker(attrs, value, o);
+    case "lines": return `<textarea ${attrs} rows="3">${esc((value || []).join("\n"))}</textarea>`;
+    case "textarea": return `<textarea ${attrs}>${esc(value)}</textarea>`;
+    default: return `<input type="text" ${attrs} value="${esc(value)}" maxlength="${f.max || 200}">`;
+  }
+}
+
+function commandRow(c, o) {
+  c = { name: "", response: "", role_id: "", role_action: "none", ...(c || {}) };
+  const actions = [["none", "בלי תפקיד"], ["add", "נותן תפקיד"], ["remove", "מוריד תפקיד"], ["toggle", "נותן או מוריד"]];
+  return `<div class="cmd-row">
+      <input type="text" class="cmd-name ltr" value="${esc(c.name)}" placeholder="rules" maxlength="32">
+      <textarea class="cmd-resp" placeholder="התשובה של הבוט">${esc(c.response)}</textarea>
+      <div class="cmd-role">
+        <select class="cmd-raction">${actions.map(([v, l]) => `<option value="${v}" ${v === c.role_action ? "selected" : ""}>${l}</option>`).join("")}</select>
+        ${rolePicker('class="cmd-roleid"', c.role_id, o, "תפקיד")}
+      </div>
+      <button class="btn btn-sm btn-ghost" data-action="row-remove" title="הסר">✕</button>
+    </div>`;
+}
+
+function listRow(f, item, o) {
+  return `<div class="list-row">${f.item_fields.map((itf) => `
+      <label class="list-cell"><span class="label">${esc(itf.label)}</span>
+        ${simpleInput(itf, item[itf.key] ?? itf.default, `data-ikey="${itf.key}" data-itype="${itf.type}"`, o)}</label>`).join("")}
+      <button class="btn btn-sm btn-ghost" data-action="row-remove" title="הסר">✕</button>
+    </div>`;
+}
+
+function rrPairRow(objects) {
+  return `<div class="rr-pair">
+      <input type="text" class="rr-emoji" placeholder="😀" maxlength="64">
+      ${rolePicker('class="rr-role"', "", objects)}
+      <button class="btn btn-sm btn-ghost" data-action="row-remove" title="הסר">✕</button>
+    </div>`;
+}
+
+function renderField(f, value, g) {
+  const o = g.objects;
+  const hint = f.hint ? `<span class="hint">${esc(f.hint)}</span>` : "";
+  const attrs = `data-field="${f.key}" data-ftype="${f.type}"`;
+  let input;
+  switch (f.type) {
+    case "bool":
+      return `<div class="row field-bool"><label class="switch"><input type="checkbox" ${attrs} ${value ? "checked" : ""}><span class="slider"></span></label><span>${esc(f.label)}</span></div>`;
+    case "rule": {
+      const params = (f.params || []).map((p) => `<label class="list-cell"><span class="label">${esc(p.label)}</span>${simpleInput(p, value[p.key], `data-pkey="${p.key}" data-ptype="${p.type}"`, o)}</label>`).join("");
+      return `<div class="rule-row ${value.on ? "on" : ""}" ${attrs}>
+          <label class="switch"><input type="checkbox" class="rule-on" ${value.on ? "checked" : ""}><span class="slider"></span></label>
+          <div class="grow"><b>${esc(f.label)}</b>${f.hint ? `<div class="hint">${esc(f.hint)}</div>` : ""}
+            ${params ? `<div class="rule-params">${params}</div>` : ""}</div>
+          <select class="rule-action">${f.actions.map(([v, l]) => `<option value="${v}" ${v === value.action ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>
+        </div>`;
+    }
+    case "list":
+      input = `<div class="list-field" ${attrs}>${(value || []).map((it) => listRow(f, it, o)).join("")}</div>
+        <button class="btn btn-sm" data-action="list-add" data-fkey="${f.key}">+ הוסף שורה</button>`;
+      break;
+    case "commands":
+      input = `<div class="cmd-list" ${attrs}>${(value || []).map((c) => commandRow(c, o)).join("")}</div>
+        <button class="btn btn-sm" data-action="cmd-add">+ הוסף פקודה</button>`;
+      break;
+    case "channels": input = multiPicker(f.key, value, o && o.text_channels, "channel"); break;
+    case "roles": input = multiPicker(f.key, value, o && o.roles, "role"); break;
+    case "reaction_roles": return viewReactionRoles(value, g);
+    case "automations":
+      if (!S.dirty || !S.autos) { S.autos = (value || []).map(normalizeAuto); S.autoOpen = null; }
+      return `<div class="field wide" ${attrs}><div id="autos">${viewAutosInner()}</div></div>`;
+    default: input = simpleInput(f, value, attrs, o);
+  }
+  const wide = ["textarea", "lines", "commands", "channels", "roles", "list"].includes(f.type);
+  return `<div class="field ${wide ? "wide" : ""}"><span class="label">${esc(f.label)}</span>${input}${hint}</div>`;
+}
+
+function viewReactionRoles(groups, g) {
+  const o = g.objects;
+  const existing = groups.length ? groups.map((grp) => `
+      <div class="rr-group">
+        <div class="grow">
+          <div><b># ${esc(grp.channel_name || grp.channel_id)}</b>
+            · <a href="https://discord.com/channels/${esc(g.id)}/${esc(grp.channel_id)}/${esc(grp.message_id)}" target="_blank" rel="noopener">להודעה</a></div>
+          <div class="module-perms">${grp.pairs.map((p) => `<span class="badge">${esc(p.emoji)} → @${esc(p.role_name || p.role_id)}</span>`).join("")}</div>
+        </div>
+        <button class="btn btn-sm btn-ghost" data-action="rr-delete" data-mid="${esc(grp.message_id)}">הסר</button>
+      </div>`).join("") : `<div class="muted small">עוד אין הודעות תפקידים.</div>`;
+  const form = o ? `
+      <div class="rr-new">
+        <div class="section-title small-title">הודעה חדשה</div>
+        <div class="field"><span class="label">ערוץ</span>${channelPicker('id="rr-channel"', "", o, "בחר ערוץ")}</div>
+        <div class="field"><span class="label">טקסט ההודעה (לא חובה)</span><textarea id="rr-content" placeholder="ריק = רשימה אוטומטית של האימוג'ים והתפקידים"></textarea></div>
+        <span class="label">אימוג'י ← תפקיד</span>
+        <div id="rr-pairs">${rrPairRow(o)}</div>
+        <div class="row" style="margin-top:8px">
+          <button class="btn btn-sm" data-action="rr-add-pair">+ שורה</button>
+          <div class="spacer"></div>
+          <button class="btn btn-primary" data-action="rr-publish">פרסם בדיסקורד</button>
+        </div>
+      </div>` : `<div class="notice warn">כדי לפרסם הודעת תפקידים חדשה, הבוט צריך להיות מחובר.</div>`;
+  return `<div class="field wide no-dirty">${existing}${form}</div>`;
+}
+
+/* ===== automations builder (WHEN SOMEONE -> IF -> DO THIS) ===== */
+const TRIGGER_ICONS = {
+  message_send: "✉️", message_delete: "🗑️", message_edit: "✏️", button_click: "🖱️", reaction_add: "👍",
+  role_gain: "🎭", role_lose: "➖", voice_join: "🔊", voice_leave: "🔈", thread_create: "🧵", member_join: "👋",
+};
+const ACTION_ICONS = {
+  send_message: "📨", reply: "↩️", add_roles: "➕", remove_roles: "➖", give_coins: "🪙", take_coins: "💸",
+  give_xp: "⭐", take_xp: "📉", add_reaction: "😀", pin_message: "📌", create_thread: "🧵", delete_message: "🗑️",
+};
+const AUTO_TEMPLATES = {
+  blank: { label: N_("ריקה"), make: () => ({ name: "", trigger: "", conditions: [], actions: [] }) },
+  welcomer: { label: N_("👋 ברוכים הבאים"), make: () => ({ name: t("ברוכים הבאים"), trigger: "member_join", conditions: [],
+    actions: [{ type: "send_message", target: "channel", channel_id: "", text: t("ברוך הבא {user} לשרת **{server}**! 🎉") }] }) },
+  thread: { label: N_("🧵 שרשור לכל הודעה"), make: () => ({ name: t("שרשור אוטומטי"), trigger: "message_send",
+    conditions: [{ type: "in_channels", values: [] }], actions: [{ type: "create_thread", name: t("דיון: {username}") }] }) },
+  verify: { label: N_("✅ אימות במילה"), make: () => ({ name: t("אימות"), trigger: "message_send",
+    conditions: [{ type: "content_exact", values: [t("!אימות")] }],
+    actions: [{ type: "add_roles", roles: [] }, { type: "delete_message" }, { type: "send_message", target: "dm", text: t("אומתת בשרת {server} ✅") }] }) },
+  button_role: { label: N_("🖱️ תפקיד בלחיצת כפתור"), make: () => ({ name: t("תפקיד בלחיצת כפתור"), trigger: "button_click",
+    conditions: [{ type: "button_is", values: [t("קבל תפקיד")] }], actions: [{ type: "add_roles", roles: [] }] }) },
+  starboard: { label: N_("⭐ Starboard פשוט"), make: () => ({ name: "Starboard", trigger: "reaction_add",
+    conditions: [{ type: "reacted_with", values: ["⭐"] }],
+    actions: [{ type: "send_message", target: "channel", channel_id: "", text: t("⭐ {user} סימן הודעה בכוכב ב-{channel}") }] }) },
+  voice_role: { label: N_("🔊 תפקיד בזמן שיחה קולית"), make: () => ({ name: t("תפקיד בשיחה קולית"), trigger: "voice_join", conditions: [],
+    actions: [{ type: "add_roles", roles: [] }] }) },
+  role_announce: { label: N_("🎭 הכרזה על תפקיד"), make: () => ({ name: t("הכרזה על תפקיד"), trigger: "role_gain",
+    conditions: [{ type: "gained_role", values: [] }],
+    actions: [{ type: "send_message", target: "channel", channel_id: "", text: t("{user} קיבל את התפקיד **{role}**! 🎉") }] }) },
+};
+
+function migrateAutoV1(a) {
+  if (!a.trigger || typeof a.trigger === "string") return a;
+  const tr = a.trigger, conds = [];
+  if (tr.channel_id) conds.push({ type: "in_channels", values: [tr.channel_id] });
+  let trigger = "member_join";
+  if (tr.type === "message") {
+    trigger = "message_send";
+    if (tr.match && tr.match !== "any" && tr.text) conds.push({ type: { exact: "content_exact", starts_with: "content_starts" }[tr.match] || "content_contains", values: [tr.text] });
+  } else if (tr.type === "reaction_add") { trigger = "reaction_add"; if (tr.emoji) conds.push({ type: "reacted_with", values: [tr.emoji] }); }
+  else if (tr.type === "role_added" || tr.type === "role_removed") {
+    trigger = tr.type === "role_added" ? "role_gain" : "role_lose";
+    if (tr.role_id) conds.push({ type: tr.type === "role_added" ? "gained_role" : "lost_role", values: [tr.role_id] });
+  }
+  const c = a.conditions && !Array.isArray(a.conditions) ? a.conditions : {};
+  if (c.required_role_id) conds.push({ type: "has_any_role", values: [c.required_role_id] });
+  const actions = (a.actions || []).map((x) => (x.type === "add_role" || x.type === "remove_role") ? { type: x.type + "s", roles: x.role_id ? [x.role_id] : [] } : x);
+  return { ...a, trigger, conditions: conds, actions, ignore_bots: c.ignore_bots !== false };
+}
+
+function normalizeAuto(a) {
+  a = migrateAutoV1(a || {});
+  return {
+    id: a.id || "", name: a.name || "", enabled: a.enabled !== false, cooldown: a.cooldown || 0,
+    ignore_bots: a.ignore_bots !== false, retry: !!a.retry, trigger: a.trigger || "",
+    conditions: (a.conditions || []).map((c) => ({ type: c.type, values: c.values || [] })),
+    actions: (a.actions || []).map((x) => ({ target: "same_channel", channel_id: "", text: "", roles: [], emoji: "", name: "", amount: 10, buttons: [], ...x })),
+  };
+}
+
+const AS = () => S.catalog.automations;
+const condAllowed = (key, trig) => AS().conditions[key].triggers.includes(trig);
+const actionAllowed = (key, trig) => !AS().actions[key].needs_message || AS().message_triggers.includes(trig);
+
+function autoSummary(a) {
+  if (!a.trigger) return t("עוד לא נבחר אירוע");
+  const conds = a.conditions.length ? " · " + t("{n} תנאים", { n: a.conditions.length }) : "";
+  return t("כשמישהו {what}{conds} ← {actions}", {
+    what: AS().triggers[a.trigger], conds, actions: a.actions.map((x) => AS().actions[x.type].label).join(" · ") || "—",
+  });
+}
+
+function valueEditor(kind, values, attrs, o) {
+  if ((kind === "channels" || kind === "roles") && o) {
+    const items = kind === "channels" ? o.text_channels : o.roles;
+    return `<div class="multi" ${attrs} data-kind="${kind}">${items.map((it) => `
+      <label class="multi-item"><input type="checkbox" value="${esc(it.id)}" ${values.includes(it.id) ? "checked" : ""}>
+        <span class="no-translate">${kind === "roles" ? "@" : "# "}${esc(it.name)}</span></label>`).join("")}</div>`;
+  }
+  const ph = { channels: t("מזהי ערוצים, אחד בכל שורה"), roles: t("מזהי תפקידים, אחד בכל שורה"), users: t("מזהי משתמשים, אחד בכל שורה"),
+    words: t("מילה או משפט בכל שורה"), emojis: t("אימוג'י בכל שורה") }[kind] || "";
+  return `<textarea rows="2" class="${kind === "words" || kind === "emojis" ? "" : "ltr"}" ${attrs} data-kind="${kind}" placeholder="${esc(ph)}">${esc(values.join("\n"))}</textarea>`;
+}
+
+function viewActionCard(a, x, j, o) {
+  const p = (k) => `data-act="${j}.${k}"`;
+  let body = "";
+  if (x.type === "send_message") {
+    const targets = Object.fromEntries(Object.entries(AS().targets).filter(([k]) => k !== "same_channel" || AS().channel_triggers.includes(a.trigger)));
+    body += `<div class="row"><label class="list-cell"><span class="label">${esc(t("איפה"))}</span>${sel(p("target"), targets, x.target)}</label>
+      ${x.target === "channel" ? `<label class="list-cell"><span class="label">${esc(t("ערוץ"))}</span>${channelPicker(p("channel_id"), x.channel_id, o, t("בחר ערוץ"))}</label>` : ""}</div>
+      <label class="list-cell wide-cell"><span class="label">${esc(t("טקסט"))}</span><textarea ${p("text")}>${esc(x.text)}</textarea></label>
+      <label class="list-cell wide-cell"><span class="label">${esc(t("כפתורים מתחת להודעה (לא חובה, אחד בכל שורה)"))}</span><textarea rows="2" ${p("buttons")}>${esc((x.buttons || []).join("\n"))}</textarea>
+        <span class="hint">${esc(t("לחיצה על כפתור מפעילה אוטומציות עם האירוע 'לוחץ על כפתור'."))}</span></label>`;
+  }
+  if (x.type === "reply") body += `<label class="list-cell wide-cell"><span class="label">${esc(t("טקסט"))}</span><textarea ${p("text")}>${esc(x.text)}</textarea></label>`;
+  if (x.type === "add_roles" || x.type === "remove_roles") body += `<label class="list-cell wide-cell"><span class="label">${esc(t("תפקידים"))}</span>${valueEditor("roles", x.roles || [], p("roles"), o)}</label>`;
+  if (["give_coins", "take_coins", "give_xp", "take_xp"].includes(x.type)) body += `<label class="list-cell"><span class="label">${esc(t("כמות"))}</span><input type="text" inputmode="numeric" class="ltr narrow" ${p("amount")} value="${esc(x.amount)}"></label>`;
+  if (x.type === "add_reaction") body += `<label class="list-cell"><span class="label">${esc(t("אימוג'י"))}</span><input type="text" ${p("emoji")} value="${esc(x.emoji)}" maxlength="64"></label>`;
+  if (x.type === "create_thread") body += `<label class="list-cell"><span class="label">${esc(t("שם השרשור"))}</span><input type="text" ${p("name")} value="${esc(x.name)}" maxlength="90"></label>`;
+  return `<div class="ab-card added do">
+      <div class="row"><span class="ab-icon">${ACTION_ICONS[x.type] || "▶"}</span><b class="grow">${esc(AS().actions[x.type].label)}</b>
+        ${j > 0 ? `<button class="btn btn-sm btn-ghost" data-action="act-up" data-j="${j}" title="${esc(t("למעלה"))}">↑</button>` : ""}
+        <button class="btn btn-sm btn-ghost" data-action="act-del" data-j="${j}" title="${esc(t("הסר"))}">🗑</button></div>
+      ${body ? `<div class="ab-body">${body}</div>` : ""}
+    </div>`;
+}
+
+function viewAutoEditor(a, i, o) {
+  const as = AS();
+  const triggerSection = a.trigger
+    ? `<div class="ab-card added when"><div class="row"><span class="ab-icon">${TRIGGER_ICONS[a.trigger]}</span>
+         <div class="grow"><div class="muted small">${esc(t("אירוע"))}</div><b>${esc(as.triggers[a.trigger])}</b></div>
+         <button class="btn btn-sm btn-ghost" data-action="auto-trigger-clear" title="${esc(t("הסר"))}">🗑</button></div></div>`
+    : `<div class="ab-grid">${Object.entries(as.triggers).map(([k, label]) => `
+         <button class="ab-card pick when" data-action="auto-trigger" data-key="${k}"><span class="ab-icon">${TRIGGER_ICONS[k]}</span><b>${esc(label)}</b><span class="ab-plus">+</span></button>`).join("")}</div>`;
+  const addedConds = a.conditions.map((c, ci) => {
+    const def = as.conditions[c.type];
+    return `<div class="ab-card added if"><div class="row"><span class="ab-icon">⏷</span><b class="grow">${esc(def.label)}</b>
+        <button class="btn btn-sm btn-ghost" data-action="cond-del" data-ci="${ci}" title="${esc(t("הסר"))}">🗑</button></div>
+        ${def.kind !== "none" ? `<div class="ab-body">${valueEditor(def.kind, c.values, `data-cond="${ci}"`, o)}</div>` : ""}</div>`;
+  }).join("");
+  const freeConds = Object.entries(as.conditions).filter(([k]) => condAllowed(k, a.trigger) && !a.conditions.some((c) => c.type === k));
+  const freeActions = Object.keys(as.actions).filter((k) => actionAllowed(k, a.trigger));
+  return `
+    <div class="ab-top row">
+      <button class="btn btn-sm btn-ghost" data-action="auto-close">← ${esc(t("לכל האוטומציות"))}</button>
+      <input type="text" class="ab-name" data-ap="name" value="${esc(a.name)}" maxlength="60" placeholder="${esc(t("שם האוטומציה"))}">
+      <label class="switch" title="${esc(t("פעילה"))}"><input type="checkbox" data-auto-toggle="${i}" ${a.enabled ? "checked" : ""}><span class="slider"></span></label>
+    </div>
+    <div class="ab-section"><span class="ab-badge when">${esc(t("כשמישהו"))}</span>${triggerSection}</div>
+    ${a.trigger ? `
+    <div class="ab-section"><span class="ab-badge if">${esc(t("אם"))}</span>
+      <div class="muted small" style="margin-bottom:8px">${esc(t("כל התנאים צריכים להתקיים. בלי תנאים, האוטומציה רצה בכל פעם."))}</div>
+      ${addedConds}
+      ${freeConds.length && a.conditions.length < as.max_conditions ? `<div class="ab-grid">${freeConds.map(([k, d]) => `
+        <button class="ab-card pick if" data-action="cond-add" data-key="${k}"><span class="ab-icon">⏷</span><b>${esc(d.label)}</b><span class="ab-plus">+</span></button>`).join("")}</div>` : ""}
+    </div>
+    <div class="ab-section"><span class="ab-badge do">${esc(t("עשה את זה"))}</span>
+      ${a.actions.map((x, j) => viewActionCard(a, x, j, o)).join("")}
+      ${a.actions.length < as.max_actions ? `<div class="ab-grid">${freeActions.map((k) => `
+        <button class="ab-card pick do" data-action="act-add" data-key="${k}"><span class="ab-icon">${ACTION_ICONS[k]}</span><b>${esc(as.actions[k].label)}</b><span class="ab-plus">+</span></button>`).join("")}</div>` : ""}
+      <span class="hint">${esc(t("משתנים: {user} {username} {server} {channel} {message} {role}"))}</span>
+    </div>
+    <div class="ab-section ab-options">
+      <label class="row"><label class="switch"><input type="checkbox" data-ap="retry" ${a.retry ? "checked" : ""}><span class="slider"></span></label>
+        <span><b>${esc(t("ניסיון חוזר בכישלון"))}</b><br><span class="muted small">${esc(t("אם פעולה נכשלת בגלל עומס של דיסקורד, הבוט ינסה שוב עד 3 פעמים (אחרי 5 שניות, 30 שניות ו-2 דקות)."))}</span></span></label>
+      <label class="row"><label class="switch"><input type="checkbox" data-ap="ignore_bots" ${a.ignore_bots ? "checked" : ""}><span class="slider"></span></label><span>${esc(t("להתעלם מבוטים"))}</span></label>
+      <label class="list-cell" style="max-width:320px"><span class="label">${esc(t("המתנה בין הפעלות לאותו משתמש (שניות)"))}</span>
+        <input type="text" inputmode="numeric" class="ltr narrow" data-ap="cooldown" value="${esc(a.cooldown)}"></label>
+    </div>` : ""}`;
+}
+
+function sel(attrs, options, value) {
+  return `<select ${attrs}>${Object.entries(options).map(([v, l]) => `<option value="${esc(v)}" ${v === value ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
+}
+
+function viewAutosInner() {
+  const as = AS();
+  const o = S.guild.objects;
+  if (S.autoOpen !== null && S.autos[S.autoOpen]) return viewAutoEditor(S.autos[S.autoOpen], S.autoOpen, o);
+  const list = S.autos.length ? S.autos.map((a, i) => `
+      <div class="auto-card ${a.enabled ? "" : "disabled"}">
+        <div class="row">
+          <label class="switch"><input type="checkbox" data-auto-toggle="${i}" ${a.enabled ? "checked" : ""}><span class="slider"></span></label>
+          <span class="ab-icon">${TRIGGER_ICONS[a.trigger] || "⚡"}</span>
+          <div class="grow"><b class="no-translate">${esc(a.name || t("אוטומציה {n}", { n: i + 1 }))}</b><div class="muted small">${esc(autoSummary(a))}</div></div>
+          <button class="btn btn-sm" data-action="auto-edit" data-i="${i}">${esc(t("ערוך"))}</button>
+          <button class="btn btn-sm btn-ghost" data-action="auto-dup" data-i="${i}" title="${esc(t("שכפל"))}">⧉</button>
+          <button class="btn btn-sm btn-ghost" data-action="auto-del" data-i="${i}" title="${esc(t("מחק"))}">🗑</button>
+        </div>
+      </div>`).join("") : `<div class="muted small" style="padding:8px 0">${esc(t("עוד אין אוטומציות. בחר תבנית ולחץ \"צור\"."))}</div>`;
+  return `
+    <div class="row" style="margin-bottom:10px">
+      <span class="muted small">${S.autos.length} / ${as.max_automations}</span><div class="spacer"></div>
+      <span class="no-dirty">${sel('id="auto-template" style="width:auto"', Object.fromEntries(Object.entries(AUTO_TEMPLATES).map(([k, v]) => [k, t(v.label)])), "blank")}</span>
+      <button class="btn btn-primary btn-sm" data-action="auto-new" ${S.autos.length >= as.max_automations ? "disabled" : ""}>+ ${esc(t("צור אוטומציה"))}</button>
+    </div>${list}`;
+}
+
+function rerenderAutos() { const box = $("#autos"); if (box) box.innerHTML = viewAutosInner(); }
+
+function readValues(el) {
+  if (el.classList.contains("multi")) return [...el.querySelectorAll("input:checked")].map((i) => i.value);
+  return el.value.split("\n").map((s) => s.trim()).filter(Boolean);
+}
+
+function setAutoValue(el) {
+  const a = S.autos[S.autoOpen];
+  if (!a) return;
+  const host = el.closest("[data-cond], [data-act], [data-ap]") || el;
+  if (host.dataset.ap) {
+    a[host.dataset.ap] = el.type === "checkbox" ? el.checked : el.value;
+  } else if (host.dataset.cond !== undefined) {
+    a.conditions[+host.dataset.cond].values = readValues(host);
+  } else if (host.dataset.act) {
+    const [j, k] = host.dataset.act.split(".");
+    const x = a.actions[+j];
+    if (k === "roles") x.roles = readValues(host);
+    else if (k === "buttons") x.buttons = readValues(host);
+    else x[k] = el.value;
+    if (k === "target") rerenderAutos();
+  }
+}
+
+/* ===== module cards, categories, module pages ===== */
+function moduleWarnings(m, g) {
+  const out = [];
+  const intents = S.status.intents;
+  if (intents && m.intents.length) {
+    const missing = m.intents.filter((i) => !intents[i]);
+    if (missing.length) out.push({ badge: "חסר Intent", text: `צריך להפעיל ${missing.map((i) => S.catalog.intent_labels[i]).join(" ו-")} ב-Developer Portal (לשונית Bot), ואז לכבות ולהפעיל את הבוט.` });
+  }
+  if (g && g.objects && m.permissions.length) {
+    const have = new Set(g.objects.bot_permissions);
+    const missing = have.has("administrator") ? [] : m.permissions.filter((p) => !have.has(p));
+    if (missing.length) out.push({ badge: "חסרות הרשאות", text: `לבוט חסרות בשרת הזה ההרשאות: ${missing.map(permLabel).join(", ")}. צור קישור הזמנה חדש בעמוד 'הרשאות והזמנה'.` });
+  }
+  return out;
+}
+
+function moduleToggle(m, g) {
+  return `<label class="switch" title="${m.status === "soon" ? "המתג נשמר, והמודול יעבוד כשייבנה" : ""}">
+      <input type="checkbox" data-module="${m.key}" ${g.modules[m.key] ? "checked" : ""}><span class="slider"></span></label>`;
+}
+
+function noGuild() {
+  return `<div class="empty"><h3>אין שרת נבחר</h3>
+    <p>${t('הזמן את הבוט לשרת (בעמוד <a href="#" data-nav="permissions">הרשאות והזמנה</a>) והפעל אותו. השרתים יופיעו כאן אוטומטית.')}</p></div>`;
+}
+
+function viewCategory(catKey) {
+  if (!S.catalog) return `<div class="empty">טוען…</div>`;
+  if (!S.guild) return noGuild();
+  const g = S.guild;
+  const cat = S.catalog.categories.find((c) => c.key === catKey);
+  const cards = S.catalog.modules.filter((m) => m.category === catKey).map((m) => {
+    const on = !!g.modules[m.key];
+    const warns = moduleWarnings(m, g);
+    return `
+      <div class="card module-card clickable" data-open="${m.key}">
+        <div class="module-head">
+          <div class="grow">
+            <h3>${esc(m.label)}</h3>
+            <p class="desc">${esc(m.description)}</p>
+          </div>
+          ${moduleToggle(m, g)}
+        </div>
+        <div class="row">
+          ${m.status === "soon" ? `<span class="badge badge-soon">בקרוב</span>` : on ? `<span class="badge badge-ok">פעיל</span>` : `<span class="badge">כבוי</span>`}
+          ${warns.map((w) => `<span class="badge badge-danger" title="${esc(w.text)}">${esc(w.badge)}</span>`).join("")}
+          <div class="spacer"></div>
+          <span class="muted small">${m.status === "soon" ? "" : "הגדרות ←"}</span>
+        </div>
+      </div>`;
+  }).join("");
+  return `
+    <div class="row section-sub">
+      <span>${I18N.lang === "en" ? "" : esc(cat ? cat.en : "") + " · "}${esc(t("שרת:"))} <b class="no-translate">${esc(g.name)}</b></span>
+      ${g.objects ? "" : `<span class="badge badge-soon">הבוט כבוי או לא בשרת: בחירה מרשימות לא זמינה</span>`}
+      <div class="spacer"></div>
+      ${guildLangSelect()}
+      ${g.present === false || !g.objects ? `<button class="btn btn-sm btn-ghost" data-action="forget-guild">הסר פרופיל שרת</button>` : ""}
+    </div>
+    <div class="grid grid-cards">${cards}</div>`;
+}
+
+function viewModulePage(key) {
+  const m = mod(key);
+  if (!m) return `<div class="empty">המודול לא נמצא</div>`;
+  if (!S.guild) return noGuild();
+  const g = S.guild;
+  const cat = S.catalog.categories.find((c) => c.key === m.category);
+  const warns = moduleWarnings(m, g);
+  const fields = m.fields.length ? `
+      <div class="card section" data-module-form="${m.key}">
+        <div class="form-grid">${m.fields.map((f) => renderField(f, g.config[m.key][f.key], g)).join("")}</div>
+      </div>` : "";
+  const soon = m.status === "soon" ? `<div class="card section empty"><h3>המודול הזה עוד לא נבנה</h3><p>אפשר כבר להפעיל את המתג: הבחירה נשמרת, והמודול יעבוד כשייבנה.</p></div>` : "";
+  return `
+    <div class="row crumbs"><span><a href="#" data-nav="cat:${m.category}">${esc(cat ? cat.label : "")}</a> › ${esc(m.label)} · ${esc(t("שרת:"))} <b class="no-translate">${esc(g.name)}</b></span><div class="spacer"></div>${guildLangSelect()}</div>
+    <div class="card section module-hero">
+      <div class="module-head">
+        <div class="grow">
+          <h2>${esc(m.label)} ${m.status === "soon" ? `<span class="badge badge-soon">בקרוב</span>` : ""}</h2>
+          <p class="desc">${esc(m.description)}</p>
+        </div>
+        ${moduleToggle(m, g)}
+      </div>
+      ${m.commands.length ? `<div class="row" style="margin-top:12px"><span class="label">פקודות:</span>${m.commands.map((c) => `<span class="badge ltr">${esc(c)}</span>`).join("")}</div>` : ""}
+      ${m.permissions.length ? `<div class="row" style="margin-top:8px"><span class="label">הרשאות שהבוט צריך:</span>${m.permissions.map((p) => `<span class="badge">${esc(permLabel(p))}</span>`).join("")}</div>` : ""}
+    </div>
+    ${warns.map((w) => `<div class="notice warn">${esc(w.text)}</div>`).join("")}
+    ${key === "claude_chat" ? viewClaudeStatus() : ""}
+    ${soon}${fields}
+    ${key === "economy" ? `<div class="card section"><div class="row"><h3>💰 העשירים בשרת</h3><div class="spacer"></div><button class="btn btn-sm" data-action="eco-reload">רענן</button></div><div id="eco-list" class="muted small" style="margin-top:10px">טוען…</div></div>` : ""}
+    ${key === "levels" ? `<div class="card section"><div class="row"><h3>🏆 לוח המובילים</h3><div class="spacer"></div><button class="btn btn-sm" data-action="levels-reload">רענן</button></div><div id="lb-list" class="muted small" style="margin-top:10px">טוען…</div></div>` : ""}
+    ${key === "warnings" ? `<div class="card section"><div class="row"><h3>אזהרות אחרונות בשרת</h3><div class="spacer"></div><button class="btn btn-sm" data-action="warnings-reload">רענן</button></div><div id="warn-list" class="muted small" style="margin-top:10px">טוען…</div></div>` : ""}`;
+}
+
+function afterModuleRender(key) {
+  if (key === "levels") loadLeaderboard();
+  if (key === "economy") loadRichList();
+  if (key === "warnings") loadWarnings();
+  if (key === "claude_chat") loadClaudeUsage();
+}
+
+async function loadWarnings() {
+  const box = $("#warn-list");
+  if (!box || !S.guildId) return;
+  let rows;
+  try { rows = await api("GET", `/guilds/${S.guildId}/warnings`); } catch (e) { box.textContent = errMessage(e); return; }
+  if (!rows.length) { box.innerHTML = "אין אזהרות."; return; }
+  box.classList.remove("muted", "small");
+  box.innerHTML = `<table class="table"><thead><tr><th>#</th><th>משתמש</th><th>סיבה</th><th>על ידי</th><th>מתי</th><th></th></tr></thead><tbody>
+    ${rows.map((r) => `<tr><td>${r.id}</td><td class="no-translate">${esc(r.user_name)}<div class="muted small ltr">${esc(r.user_id)}</div></td>
+      <td class="no-translate">${esc(r.reason)}</td><td class="no-translate">${esc(r.moderator_name)}</td><td class="small">${new Date(r.created * 1000).toLocaleString("he-IL")}</td>
+      <td><button class="btn btn-sm btn-ghost" data-action="warning-delete" data-wid="${r.id}">מחק</button></td></tr>`).join("")}
+    </tbody></table>`;
+}
+
+async function loadLeaderboard() {
+  const box = $("#lb-list");
+  if (!box || !S.guildId) return;
+  let rows;
+  try { rows = await api("GET", `/guilds/${S.guildId}/levels?limit=50`); } catch (e) { box.textContent = errMessage(e); return; }
+  if (!rows.length) { box.innerHTML = "עוד אין XP לאף אחד. ה-XP מתחיל להיצבר כשהמודול פעיל והבוט מחובר."; return; }
+  box.classList.remove("muted", "small");
+  const medal = (r) => ({ 1: "🥇", 2: "🥈", 3: "🥉" }[r] || `#${r}`);
+  box.innerHTML = `<table class="table"><thead><tr><th>דירוג</th><th>משתמש</th><th>רמה</th><th>התקדמות</th><th>XP</th><th>הודעות</th><th></th></tr></thead><tbody>
+    ${rows.map((r) => `<tr><td>${medal(r.rank)}</td><td class="no-translate">${esc(r.user_name || r.user_id)}<div class="muted small ltr">${esc(r.user_id)}</div></td>
+      <td><b>${r.level}</b></td>
+      <td><div class="xpbar"><span style="width:${Math.round((r.into / r.needed) * 100)}%"></span></div><div class="muted small ltr">${r.into} / ${r.needed}</div></td>
+      <td class="ltr">${r.xp.toLocaleString()}</td><td class="ltr">${r.messages.toLocaleString()}</td>
+      <td><button class="btn btn-sm btn-ghost" data-action="xp-reset" data-uid="${esc(r.user_id)}" data-name="${esc(r.user_name || r.user_id)}">אפס</button></td></tr>`).join("")}
+    </tbody></table>`;
+}
+
+async function loadRichList() {
+  const box = $("#eco-list");
+  if (!box || !S.guildId) return;
+  let rows;
+  try { rows = await api("GET", `/guilds/${S.guildId}/economy?limit=50`); } catch (e) { box.textContent = errMessage(e); return; }
+  if (!rows.length) { box.innerHTML = "עוד אין ארנקים. הם נוצרים כשמישהו משתמש בפקודה של הכלכלה."; return; }
+  const cfg = S.guild.config.economy;
+  box.classList.remove("muted", "small");
+  box.innerHTML = `<table class="table"><thead><tr><th>#</th><th>משתמש</th><th>יתרה</th><th>רצף יומי</th><th>פריטים</th><th></th></tr></thead><tbody>
+    ${rows.map((r) => `<tr><td>${r.rank}</td><td class="no-translate">${esc(r.user_name || r.user_id)}<div class="muted small ltr">${esc(r.user_id)}</div></td>
+      <td>${esc(cfg.currency_icon)} <b class="ltr">${r.balance.toLocaleString()}</b></td><td>${r.streak ? "🔥 " + r.streak : "—"}</td><td>${r.items}</td>
+      <td><button class="btn btn-sm btn-ghost" data-action="eco-reset" data-uid="${esc(r.user_id)}" data-name="${esc(r.user_name || r.user_id)}">אפס</button></td></tr>`).join("")}
+    </tbody></table>`;
+}
+
+function collectModuleForm(key) {
+  const form = document.querySelector(`[data-module-form="${key}"]`);
+  const config = {};
+  if (!form) return config;
+  const readCell = (el, type) => (type === "lines" ? el.value.split("\n").map((s) => s.trim()).filter(Boolean) : el.value);
+  form.querySelectorAll("[data-field]").forEach((el) => {
+    const f = el.dataset.field, t = el.dataset.ftype;
+    if (t === "bool") config[f] = el.checked;
+    else if (t === "lines") config[f] = el.value.split("\n").map((s) => s.trim()).filter(Boolean);
+    else if (t === "ids") config[f] = el.value.split(/[\s,]+/).filter(Boolean);
+    else if (t === "multi") config[f] = [...el.querySelectorAll("input:checked")].map((i) => i.value);
+    else if (t === "rule") {
+      const v = { on: el.querySelector(".rule-on").checked, action: el.querySelector(".rule-action").value };
+      el.querySelectorAll("[data-pkey]").forEach((p) => { v[p.dataset.pkey] = readCell(p, p.dataset.ptype); });
+      config[f] = v;
+    } else if (t === "list") {
+      config[f] = [...el.querySelectorAll(".list-row")].map((row) => {
+        const item = {};
+        row.querySelectorAll("[data-ikey]").forEach((c) => { item[c.dataset.ikey] = readCell(c, c.dataset.itype); });
+        return item;
+      });
+    } else if (t === "commands") {
+      config[f] = [...el.querySelectorAll(".cmd-row")].map((r) => ({
+        name: r.querySelector(".cmd-name").value, response: r.querySelector(".cmd-resp").value,
+        role_action: r.querySelector(".cmd-raction").value, role_id: r.querySelector(".cmd-roleid").value,
+      }));
+    } else if (t === "automations") config[f] = S.autos;
+    else if (t !== "reaction_roles") config[f] = el.value;
+  });
+  return config;
+}
+
+/* ===== Claude chat status ===== */
+function viewClaudeStatus() {
+  const set = S.settings ? S.settings.settings : {};
+  const key = S.settings ? S.settings.secrets.anthropic_key.set : false;
+  const check = (ok, yes, no) => `<div class="row"><span class="badge ${ok ? "badge-ok" : "badge-danger"}">${ok ? "✓" : "✕"}</span><span>${ok ? yes : no}</span></div>`;
+  return `
+    <div class="card section">
+      <h3>מצב הצ'אט</h3>
+      <div class="grid" style="grid-template-columns:1fr 1fr;margin-top:10px">
+        <div class="grid" style="gap:8px">
+          ${check(key, "Anthropic API Key שמור", "חסר Anthropic API Key")}
+          ${check(!!set.allowed_user_id, `משתמש מורשה: <span class="ltr">${esc(set.allowed_user_id)}</span>`, "לא הוגדר User ID מורשה: הבוט לא יענה לאף אחד")}
+          <div class="row"><span class="badge">#</span><span>${set.allowed_channel_id ? `ערוץ מורשה: <span class="ltr">${esc(set.allowed_channel_id)}</span>` : "כל ערוץ (בתיוג) והודעות פרטיות"}</span></div>
+          <div class="muted small">${t('משנים את אלה בעמוד <a href="#" data-nav="connection">חיבור והגדרות</a>.')}</div>
+        </div>
+        <div id="claude-usage"><div class="muted small">טוען שימוש…</div></div>
+      </div>
+    </div>`;
+}
+
+async function loadClaudeUsage() {
+  let data;
+  try { data = await api("GET", "/claude/usage"); } catch { return; }
+  const box = $("#claude-usage");
+  if (!box) return;
+  const today = data.days[0];
+  const week = data.days.reduce((a, d) => ({ m: a.m + d.messages, c: a.c + d.est_cost_usd }), { m: 0, c: 0 });
+  box.innerHTML = `
+    <div class="grid" style="grid-template-columns:1fr 1fr">
+      <div><div class="stat-label">תשובות היום</div><div class="stat-value">${today.messages}</div></div>
+      <div><div class="stat-label">7 ימים</div><div class="stat-value">${week.m}</div></div>
+    </div>
+    <div class="muted small" style="margin-top:8px">עלות משוערת ל-7 ימים: <span class="ltr">${"$" + week.c.toFixed(4)}</span>
+      (לפי מחירון המודלים. החיוב האמיתי מופיע ב-Anthropic Console)</div>`;
+}
+
+/* ===== quick search (Ctrl+K) ===== */
+let searchSel = 0;
+function searchIndex() {
+  const items = GENERAL_NAV.map((n) => ({ label: n.label, sub: "כללי", page: n.page }));
+  if (S.catalog) {
+    S.catalog.categories.forEach((c) => items.push({ label: c.label, sub: c.en, page: "cat:" + c.key }));
+    S.catalog.modules.forEach((m) => {
+      const cat = S.catalog.categories.find((c) => c.key === m.category);
+      items.push({ label: m.label, sub: `${cat ? cat.label : ""} · ${m.description}`, page: "mod:" + m.key });
+      m.fields.forEach((f) => items.push({ label: f.label, sub: `${m.label} › הגדרה`, page: "mod:" + m.key }));
+      m.commands.forEach((c) => items.push({ label: c, sub: `${m.label} › פקודה`, page: "mod:" + m.key }));
+    });
+  }
+  return items;
+}
+
+function openSearch() {
+  $("#search").classList.remove("hidden");
+  const input = $("#search-input");
+  input.value = "";
+  searchSel = 0;
+  renderSearch();
+  input.focus();
+}
+function closeSearch() { $("#search").classList.add("hidden"); }
+
+function searchResults() {
+  const q = $("#search-input").value.trim().toLowerCase();
+  const all = searchIndex();
+  if (!q) return all.slice(0, 12);
+  return all.filter((i) => (i.label + " " + i.sub).toLowerCase().includes(q)).slice(0, 12);
+}
+
+function renderSearch() {
+  const res = searchResults();
+  searchSel = Math.min(searchSel, Math.max(0, res.length - 1));
+  $("#search-results").innerHTML = res.length ? res.map((r, i) => `
+      <div class="search-item ${i === searchSel ? "sel" : ""}" data-search-page="${esc(r.page)}">
+        <b>${esc(r.label)}</b><span class="muted small">${esc(r.sub)}</span></div>`).join("")
+    : `<div class="muted small" style="padding:12px">לא נמצאו תוצאות</div>`;
+}
+
+/* ===== actions ===== */
+const actions = {
+  async power(btn) {
+    const running = ["connecting", "connected", "reconnecting"].includes(S.status.state);
+    await guarded(btn, async () => onStatus(await api("POST", running ? "/bot/stop" : "/bot/start")));
+  },
+  "clear-logs"() { S.logs = []; renderLogs(); },
+  "toggle-show"(btn) {
+    const input = document.getElementById(btn.dataset.target);
+    const show = input.type === "password";
+    input.type = show ? "text" : "password";
+    btn.textContent = show ? "הסתר" : "הצג";
+  },
+  async "save-secret"(btn) {
+    const name = btn.dataset.name;
+    const input = document.getElementById("secret-" + name);
+    if (!input.value.trim()) { toast("השדה ריק", "error"); return; }
+    await guarded(btn, async () => {
+      await api("PUT", "/secrets/" + name, { value: input.value });
+      input.value = "";
+      S.settings = await api("GET", "/settings");
+      render();
+      toast("נשמר", "ok");
+    });
+  },
+  async "test-secret"(btn) {
+    await guarded(btn, async () => toast((await api("POST", `/secrets/${btn.dataset.name}/test`)).message, "ok"));
+  },
+  async "delete-secret"(btn) {
+    if (!(await confirmDialog("למחוק את " + btn.dataset.label + "?", "הערך יימחק מ-Windows Credential Manager. כדי להשתמש בו שוב, תצטרך להדביק אותו מחדש.", "מחק"))) return;
+    await guarded(btn, async () => {
+      await api("DELETE", "/secrets/" + btn.dataset.name);
+      S.settings = await api("GET", "/settings");
+      render();
+      toast("נמחק", "ok");
+    });
+  },
+  async "save-ids"(btn) {
+    await guarded(btn, async () => {
+      S.settings = await api("PUT", "/settings", {
+        allowed_user_id: $("#allowed_user_id").value.trim(),
+        allowed_channel_id: $("#allowed_channel_id").value.trim(),
+      });
+      toast("נשמר", "ok");
+    });
+  },
+  async "save-profile"(btn) {
+    const body = {};
+    const name = $("#bot-username").value.trim();
+    if (S.profile && name !== S.profile.username) body.username = name;
+    if (S.avatarDraft) body.avatar = S.avatarDraft;
+    if (S.bannerDraft) body.banner = S.bannerDraft;
+    const pr = presenceDraft();
+    const presenceChanged = JSON.stringify(pr) !== JSON.stringify(S.profile.presence);
+    if (!Object.keys(body).length && !presenceChanged) { toast("אין שינויים"); return; }
+    await guarded(btn, async () => {
+      if (presenceChanged) S.profile.presence = await api("PUT", "/presence", pr);
+      if (Object.keys(body).length) S.profile = await api("PATCH", "/profile", body);
+      S.avatarDraft = null; S.bannerDraft = null; S.presenceDraft = null;
+      render();
+      toast("פרופיל הבוט עודכן", "ok");
+    });
+  },
+  "discard-avatar"() { S.avatarDraft = null; render(); },
+  "discard-banner"() { S.bannerDraft = null; render(); },
+  "perm-recommended"() { S.permSel = new Set(S.catalog.recommended_permissions); render(); },
+  "perm-none"() { S.permSel = new Set(); render(); },
+  async "make-invite"(btn) {
+    await guarded(btn, async () => {
+      S.invite = await api("POST", "/invite", { permissions: [...S.permSel], guild_id: $("#invite-guild").value });
+      render();
+    });
+  },
+  async "copy-invite"() {
+    try { await navigator.clipboard.writeText(S.invite.url); toast("הועתק", "ok"); }
+    catch { toast("ההעתקה נכשלה. סמן את הקישור והעתק ידנית.", "error"); }
+  },
+  async "save-module"(btn) {
+    const key = S.page.slice(4);
+    const config = collectModuleForm(key);
+    if (key === "automations" && (config.items || []).some((a) => a.enabled && a.actions.some((x) => x.type === "delete_message"))) {
+      const ok = await confirmDialog("אוטומציה שמוחקת הודעות",
+        "אחת האוטומציות מוחקת הודעות אוטומטית, בלי אישור בכל פעם. להמשיך?", "כן, שמור", false);
+      if (!ok) return;
+    }
+    if (key === "warnings" && (config.steps || []).some((s) => ["kick", "ban", "tempban"].includes(s.action))) {
+      const ok = await confirmDialog("הרחקה או חסימה אוטומטית",
+        "הגדרת שהבוט ירחיק או יחסום משתמשים אוטומטית כשהם מגיעים למספר אזהרות, בלי אישור ידני בכל פעם. להמשיך?", "כן, שמור", false);
+      if (!ok) return;
+    }
+    await guarded(btn, async () => {
+      S.guild = await api("PUT", `/guilds/${S.guildId}/modules/${key}/config`, { config });
+      setDirty(false);
+      render();
+      toast("ההגדרות נשמרו", "ok");
+    });
+  },
+  "cancel-module"() { setDirty(false); render(); },
+  "auto-new"() {
+    const tpl = AUTO_TEMPLATES[$("#auto-template").value] || AUTO_TEMPLATES.blank;
+    S.autos.push(normalizeAuto(tpl.make()));
+    S.autoOpen = S.autos.length - 1;
+    setDirty(true); rerenderAutos();
+  },
+  "auto-edit"(btn) { S.autoOpen = +btn.dataset.i; rerenderAutos(); },
+  "auto-close"() { S.autoOpen = null; rerenderAutos(); },
+  "auto-dup"(btn) {
+    if (S.autos.length >= AS().max_automations) { toast("הגעת למקסימום אוטומציות", "error"); return; }
+    const copy = JSON.parse(JSON.stringify(S.autos[+btn.dataset.i]));
+    copy.id = ""; copy.name = (copy.name || t("אוטומציה")) + " " + t("(עותק)");
+    S.autos.splice(+btn.dataset.i + 1, 0, copy);
+    setDirty(true); rerenderAutos();
+  },
+  async "auto-del"(btn) {
+    const a = S.autos[+btn.dataset.i];
+    if (!(await confirmDialog(t('למחוק את "{name}"?', { name: a.name || t("האוטומציה") }), "האוטומציה תימחק אחרי שתלחץ 'שמור שינויים'.", "מחק"))) return;
+    S.autos.splice(+btn.dataset.i, 1);
+    S.autoOpen = null;
+    setDirty(true); rerenderAutos();
+  },
+  "auto-trigger"(btn) {
+    const a = S.autos[S.autoOpen];
+    a.trigger = btn.dataset.key;
+    a.conditions = a.conditions.filter((c) => condAllowed(c.type, a.trigger));
+    a.actions = a.actions.filter((x) => actionAllowed(x.type, a.trigger));
+    a.actions.forEach((x) => { if (x.target === "same_channel" && !AS().channel_triggers.includes(a.trigger)) x.target = "channel"; });
+    setDirty(true); rerenderAutos();
+  },
+  "auto-trigger-clear"() { S.autos[S.autoOpen].trigger = ""; setDirty(true); rerenderAutos(); },
+  "cond-add"(btn) { S.autos[S.autoOpen].conditions.push({ type: btn.dataset.key, values: [] }); setDirty(true); rerenderAutos(); },
+  "cond-del"(btn) { S.autos[S.autoOpen].conditions.splice(+btn.dataset.ci, 1); setDirty(true); rerenderAutos(); },
+  "act-add"(btn) {
+    const a = S.autos[S.autoOpen];
+    const x = normalizeAuto({ actions: [{ type: btn.dataset.key }] }).actions[0];
+    if (!AS().channel_triggers.includes(a.trigger)) x.target = "channel";
+    a.actions.push(x);
+    setDirty(true); rerenderAutos();
+  },
+  "act-del"(btn) { S.autos[S.autoOpen].actions.splice(+btn.dataset.j, 1); setDirty(true); rerenderAutos(); },
+  "act-up"(btn) {
+    const acts = S.autos[S.autoOpen].actions, j = +btn.dataset.j;
+    [acts[j - 1], acts[j]] = [acts[j], acts[j - 1]];
+    setDirty(true); rerenderAutos();
+  },
+  "cmd-add"(btn) { btn.previousElementSibling.insertAdjacentHTML("beforeend", commandRow(null, S.guild.objects)); setDirty(true); },
+  "list-add"(btn) {
+    const m = mod(S.page.slice(4));
+    const f = m.fields.find((x) => x.key === btn.dataset.fkey);
+    const box = btn.previousElementSibling;
+    if (box.childElementCount >= (f.max_items || 50)) { toast(`עד ${f.max_items || 50} שורות`, "error"); return; }
+    box.insertAdjacentHTML("beforeend", listRow(f, {}, S.guild.objects));
+    setDirty(true);
+  },
+  "row-remove"(btn) {
+    const inRR = btn.closest("#rr-pairs");
+    btn.parentElement.remove();
+    if (!inRR) setDirty(true);
+  },
+  "rr-add-pair"() {
+    const box = $("#rr-pairs");
+    if (box.childElementCount >= 20) { toast("עד 20 שורות", "error"); return; }
+    box.insertAdjacentHTML("beforeend", rrPairRow(S.guild.objects));
+  },
+  async "rr-publish"(btn) {
+    const pairs = [...document.querySelectorAll("#rr-pairs .rr-pair")]
+      .map((r) => ({ emoji: r.querySelector(".rr-emoji").value.trim(), role_id: r.querySelector(".rr-role").value }))
+      .filter((p) => p.emoji || p.role_id);
+    await guarded(btn, async () => {
+      S.guild = await api("POST", `/guilds/${S.guildId}/reaction-roles`, { channel_id: $("#rr-channel").value, content: $("#rr-content").value, pairs });
+      render();
+      toast("ההודעה פורסמה בדיסקורד", "ok");
+    });
+  },
+  async "rr-delete"(btn) {
+    const res = await confirmDialog("להסיר את הודעת התפקידים?",
+      "הבוט יפסיק לתת תפקידים לפי הריאקשנים בהודעה הזו. תפקידים שכבר ניתנו נשארים.", "הסר", true, "למחוק גם את ההודעה מדיסקורד");
+    if (!res.ok) return;
+    await guarded(btn, async () => {
+      S.guild = await api("DELETE", `/guilds/${S.guildId}/reaction-roles/${btn.dataset.mid}?delete_message=${res.checked}`);
+      render();
+      toast("הוסר", "ok");
+    });
+  },
+  "warnings-reload"() { loadWarnings(); },
+  "check-updates"() { S.updates = null; render(); },
+  async "save-update-repo"(btn) {
+    await guarded(btn, async () => { S.updates = await api("PUT", "/updates/repo", { repo: $("#update-repo").value }); render(); toast("נשמר", "ok"); });
+  },
+  async "install-version"(btn) {
+    const newer = btn.dataset.newer === "1";
+    const ok = await confirmDialog(newer ? t("לעדכן לגרסה {tag}?", { tag: btn.dataset.tag }) : t("לחזור לגרסה {tag}?", { tag: btn.dataset.tag }),
+      "הקבצים של האפליקציה יוחלפו בגרסה שבחרת. ההגדרות, הסודות והנתונים שלך לא משתנים, וגיבוי של הגרסה הנוכחית נשמר. אחרי ההתקנה צריך לסגור את האפליקציה ולפתוח אותה מחדש.",
+      newer ? "עדכן" : "חזור לגרסה", !newer);
+    if (!ok) return;
+    await guarded(btn, async () => {
+      btn.textContent = t("מתקין…");
+      await api("POST", "/updates/install", { tag: btn.dataset.tag });
+      await confirmDialog("הגרסה הותקנה", "סגור את האפליקציה ופתח אותה מחדש כדי להתחיל לעבוד עם הגרסה החדשה.", "הבנתי", false);
+      loadUpdates();
+    });
+  },
+  "levels-reload"() { loadLeaderboard(); },
+  "eco-reload"() { loadRichList(); },
+  async "eco-reset"(btn) {
+    if (!(await confirmDialog(`לאפס את הארנק של ${btn.dataset.name}?`, "היתרה, הרצף היומי והפריטים שלו בשרת הזה יימחקו. אי אפשר לבטל.", "אפס"))) return;
+    await guarded(btn, async () => { await api("DELETE", `/guilds/${S.guildId}/economy/${btn.dataset.uid}`); toast("אופס", "ok"); loadRichList(); });
+  },
+  async "xp-reset"(btn) {
+    if (!(await confirmDialog(`לאפס את ה-XP של ${btn.dataset.name}?`, "כל ה-XP וספירת ההודעות שלו בשרת הזה יימחקו, והוא יחזור לרמה 0. אי אפשר לבטל. תפקידי פרס שכבר קיבל לא יוסרו אוטומטית.", "אפס"))) return;
+    await guarded(btn, async () => { await api("DELETE", `/guilds/${S.guildId}/levels/${btn.dataset.uid}`); toast("אופס", "ok"); loadLeaderboard(); });
+  },
+  async "warning-delete"(btn) {
+    if (!(await confirmDialog(`למחוק את אזהרה #${btn.dataset.wid}?`, "האזהרה תימחק לצמיתות ולא תיספר יותר.", "מחק"))) return;
+    await guarded(btn, async () => { await api("DELETE", `/guilds/${S.guildId}/warnings/${btn.dataset.wid}`); toast("נמחקה", "ok"); loadWarnings(); });
+  },
+  async "forget-guild"(btn) {
+    if (!(await confirmDialog(`להסיר את הפרופיל של "${S.guild.name}"?`, "כל ההגדרות והמתגים של השרת הזה יימחקו מהאפליקציה. הבוט עצמו לא יוצא מהשרת.", "הסר"))) return;
+    await guarded(btn, async () => { await api("DELETE", "/guilds/" + S.guildId); await refreshGuilds(); render(); });
+  },
+  search() { openSearch(); },
+};
+
+/* ===== events ===== */
+document.addEventListener("click", (e) => {
+  const sr = e.target.closest("[data-search-page]");
+  if (sr) { closeSearch(); go(sr.dataset.searchPage); return; }
+  if (e.target.id === "search") { closeSearch(); return; }
+  const nav = e.target.closest("[data-nav]");
+  if (nav) { e.preventDefault(); go(nav.dataset.nav); return; }
+  const btn = e.target.closest("[data-action]");
+  if (btn && actions[btn.dataset.action]) { e.preventDefault(); actions[btn.dataset.action](btn); return; }
+  const card = e.target.closest("[data-open]");
+  if (card && !e.target.closest(".switch")) go("mod:" + card.dataset.open);
+});
+
+function markDirty(e) {
+  const t = e.target;
+  if (t.closest && t.closest("#autos [data-ap], #autos [data-act], #autos [data-cond]")) { if (e.type === "change" || t.tagName !== "SELECT") setAutoValue(t); }
+  if (t.dataset && t.dataset.autoToggle !== undefined) { S.autos[+t.dataset.autoToggle].enabled = t.checked; if (e.type === "change") rerenderAutos(); }
+  if (t.closest("[data-module-form]") && !t.closest(".no-dirty") && !t.dataset.module) {
+    setDirty(true);
+    const rule = t.closest(".rule-row");
+    if (rule && t.classList.contains("rule-on")) rule.classList.toggle("on", t.checked);
+  }
+}
+document.addEventListener("input", markDirty);
+
+document.addEventListener("change", async (e) => {
+  markDirty(e);
+  const t = e.target;
+  if (t.id === "guild-select") {
+    if (t.value === "__add") { renderGuildSelect(); go("permissions"); return; }
+    if (S.dirty && !(await confirmDialog("יש שינויים שלא נשמרו", "להחליף שרת בלי לשמור?", "החלף"))) { renderGuildSelect(); return; }
+    setDirty(false);
+    S.guildId = t.value;
+    await loadGuild();
+    return;
+  }
+  if (t.id === "log-filter") { S.logFilter = t.value; renderLogs(); return; }
+  if (t.id === "ui-lang" || t.id === "ui-lang-2") { setUiLang(t.value); return; }
+  if (t.id === "guild-lang") {
+    try {
+      S.guild = await api("PUT", `/guilds/${S.guildId}/language`, { language: t.value });
+      toast(window.t("שפת הבוט עודכנה"), "ok");
+      if (!S.dirty) render();
+    } catch (err) { toast(errMessage(err), "error"); }
+    return;
+  }
+  if (t.id === "avatar-file" || t.id === "banner-file") {
+    const file = t.files[0];
+    if (!file) return;
+    if (file.size > 8 * 1024 * 1024) { toast("התמונה גדולה מדי (עד 8MB)", "error"); t.value = ""; return; }
+    const reader = new FileReader();
+    const isBanner = t.id === "banner-file";
+    reader.onload = () => { if (isBanner) S.bannerDraft = reader.result; else S.avatarDraft = reader.result; render(); };
+    reader.readAsDataURL(file);
+    return;
+  }
+  if (t.id === "pr-status" || t.id === "pr-activity") {
+    const pr = presenceDraft();
+    if (t.id === "pr-status") pr.status = t.value; else pr.activity = t.value;
+    if (t.id === "pr-activity") { render(); return; }
+    refreshProfilePreview();
+    return;
+  }
+  if (t.dataset.setting) {
+    try { S.settings = await api("PUT", "/settings", { [t.dataset.setting]: t.checked }); toast("נשמר", "ok"); }
+    catch (err) { t.checked = !t.checked; toast(errMessage(err), "error"); }
+    return;
+  }
+  if (t.dataset.perm) {
+    if (t.dataset.perm === "administrator" && t.checked) {
+      const ok = await confirmDialog("לתת הרשאת Administrator?",
+        "Administrator נותן לבוט שליטה מלאה בשרת ועוקף את כל ההגבלות. אם הטוקן ידלוף, מי שמחזיק בו יוכל למחוק את השרת.\nמומלץ להשאיר כבוי ולבחור רק הרשאות ספציפיות.", "כן, אני מבין");
+      if (!ok) { t.checked = false; return; }
+    }
+    if (t.checked) S.permSel.add(t.dataset.perm); else S.permSel.delete(t.dataset.perm);
+    S.invite = null;
+    return;
+  }
+  if (t.dataset.module) {
+    try {
+      S.guild = await api("PUT", `/guilds/${S.guildId}/modules/${t.dataset.module}`, { enabled: t.checked });
+      S.catalog = await api("GET", "/catalog");
+      S.permSel = null;
+      toast(t.checked ? "המודול הופעל" : "המודול כובה", "ok");
+      if (S.page.startsWith("cat:")) render();
+    } catch (err) { t.checked = !t.checked; toast(errMessage(err), "error"); }
+  }
+});
+
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openSearch(); return; }
+  if ($("#search").classList.contains("hidden")) return;
+  const res = searchResults();
+  if (e.key === "Escape") closeSearch();
+  else if (e.key === "ArrowDown") { searchSel = Math.min(searchSel + 1, res.length - 1); renderSearch(); e.preventDefault(); }
+  else if (e.key === "ArrowUp") { searchSel = Math.max(searchSel - 1, 0); renderSearch(); e.preventDefault(); }
+  else if (e.key === "Enter" && res[searchSel]) { closeSearch(); go(res[searchSel].page); }
+});
+document.addEventListener("input", (e) => {
+  if (e.target.id === "search-input") { searchSel = 0; renderSearch(); }
+  if (e.target.id === "pr-text") { presenceDraft().text = e.target.value; refreshProfilePreview(); }
+  if (e.target.id === "pr-url") presenceDraft().url = e.target.value.trim();
+  if (e.target.id === "bot-username") refreshProfilePreview();
+});
+window.addEventListener("beforeunload", (e) => { if (S.dirty) { e.preventDefault(); e.returnValue = ""; } });
+
+/* ===== boot ===== */
+async function boot() {
+  renderNav();
+  render();
+  if (!TOKEN) {
+    $("#main").innerHTML = `<div class="empty"><h3>אין הרשאת גישה</h3><p>פתח את האפליקציה דרך start.cmd.</p></div>`;
+    return;
+  }
+  try { await loadI18n(); } catch (e) { toast(errMessage(e), "error"); }
+  try {
+    [S.settings, S.catalog] = await Promise.all([api("GET", "/settings"), api("GET", "/catalog")]);
+  } catch (e) { toast(errMessage(e), "error"); }
+  renderNav();
+  connectWS();
+  await refreshGuilds();
+  render();
+}
+
+boot();

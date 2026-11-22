@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>מנהל הבוט</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <img id="brand-avatar" class="brand-avatar" alt="" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">
+        <div>
+          <div class="brand-name" id="brand-name">מנהל הבוט</div>
+          <div class="brand-sub">Discord Bot Manager</div>
+        </div>
+      </div>
+
+      <label class="guild-picker">
+        <span class="label">שרת</span>
+        <select id="guild-select"></select>
+      </label>
+
+      <nav id="nav"></nav>
+    </aside>
+
+    <div class="main-col">
+      <header class="topbar">
+        <h1 id="page-title"></h1>
+        <div class="topbar-actions">
+          <select id="ui-lang" class="no-translate lang-select" title="Language"></select>
+          <button class="btn btn-ghost search-btn" data-action="search" title="חיפוש מהיר">🔍 חיפוש <kbd>Ctrl+K</kbd></button>
+          <span id="status-pill" class="pill pill-stopped"><span class="dot"></span><span id="status-text">כבוי</span></span>
+          <button id="power-btn" class="btn btn-primary" data-action="power">הפעל בוט</button>
+        </div>
+      </header>
+      <main id="main" class="content"></main>
+    </div>
+  </div>
+
+  <div id="savebar" class="savebar hidden">
+    <span>⚠️ זוהו שינויים! זכור לשמור.</span>
+    <div class="spacer"></div>
+    <button class="btn btn-ghost" data-action="cancel-module">ביטול</button>
+    <button class="btn btn-primary" data-action="save-module">שמור שינויים</button>
+  </div>
+
+  <div id="search" class="modal search-modal hidden">
+    <div class="search-card">
+      <input type="text" id="search-input" placeholder="חפש מודול, הגדרה או פקודה…" autocomplete="off">
+      <div id="search-results"></div>
+      <div class="muted small search-help">↑↓ לבחירה · Enter לפתיחה · Esc לסגירה</div>
+    </div>
+  </div>
+
+  <div id="toasts" class="toasts"></div>
+
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <h2 id="modal-title"></h2>
+      <p id="modal-body"></p>
+      <label id="modal-check-row" class="row hidden" style="margin:-6px 0 16px"><input type="checkbox" id="modal-check"><span id="modal-check-label"></span></label>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="modal-cancel">ביטול</button>
+        <button class="btn btn-danger" id="modal-ok">אישור</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
