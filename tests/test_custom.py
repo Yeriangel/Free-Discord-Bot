@@ -450,6 +450,53 @@ def test_custom_commands_v2_embed_language_autostart():
     print("ok custom commands v2 (variables, slash/text, delete my message), embed builder, one language, start with Windows")
 
 
+def test_bot_character():
+    from botd import persona
+    from botd.modules import ai_providers
+    from botd.modules.claude_chat import ai_complete, character_prompt
+
+    p = persona.clean({"enabled": True, "name": "Deadpool", "universe": "Marvel", "traits": ["chaotic", "chaotic", " "],
+                       "length": 99, "vulgarity": -4, "content": 4, "category": "nope", "avatar_url": "javascript:x"})
+    assert p["traits"] == ["chaotic"] and p["length"] == 3 and p["vulgarity"] == 0 and p["category"] == "original" and p["avatar_url"] == ""
+    text = persona.build_prompt(p)
+    assert text.startswith("You are Deadpool from Marvel.") and "Use everything you already know about Deadpool" in text
+    assert "never explicit" not in text and "family-friendly" not in text  # content capped to level 2 outside NSFW channels
+    assert "Mature themes" in text and "Adult humor" in persona.build_prompt(p, nsfw_channel=True)
+    only_name = persona.build_prompt(persona.clean({"enabled": True, "name": "Benjamin Netanyahu"}))
+    assert "might be a real" in only_name and "parody bot" in only_name   # real people are a parody even without a category
+    try:
+        persona.validate({"enabled": True, "name": ""})
+        raise AssertionError("character without a name accepted")
+    except ValueError:
+        pass
+    g = persona.parse_generated('Sure!\n```json\n{"description": "Merc with a mouth", "category": "movies", "traits": ["chaotic"], "facts": ["Heals fast"]}\n```')
+    assert g["description"] == "Merc with a mouth" and g["category"] == "movies" and g["facts"] == ["Heals fast"]
+
+    store, _ = make_env()
+    guild = SimpleNamespace(id=int(GID))
+    assert character_prompt(store, guild, None) == ""
+    store.set_config(GID, "_persona", persona.validate({"enabled": True, "name": "Deadpool"}))
+    store.set_config(GID, "claude_chat", {"system_prompt": "Never talk about cats."})
+    cp = character_prompt(store, guild, SimpleNamespace(nsfw=False))
+    assert cp.startswith("You are Deadpool.") and cp.endswith("Never talk about cats.")
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    ai_providers.PROVIDERS["openai"]["base"] = f"http://127.0.0.1:{server.server_port}/v1"
+    from botd import secrets_store
+    secrets_store.get = lambda name: {"openai_key": "sk-openai-test"}.get(name)
+    NEXT.append({"model": "gpt-6-luna", "choices": [{"finish_reason": "stop", "message": {"content": "Maximum effort!"}}],
+                 "usage": {"prompt_tokens": 20, "completion_tokens": 3}})
+    try:
+        reply = asyncio.run(ai_complete(store, {"provider": "openai", "openai_model": "luna"}, cp,
+                                        [{"role": "user", "content": "hi"}]))
+    finally:
+        server.shutdown()
+    assert reply == "Maximum effort!" and REQUESTS[-1]["body"]["messages"][0]["content"].startswith("You are Deadpool.")
+    store.close()
+    print("ok bot character: name-only works, sliders, NSFW cap, real-person parody rule, auto-fill parsing, chat uses it")
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

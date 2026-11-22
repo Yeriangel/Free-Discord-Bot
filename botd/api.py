@@ -821,6 +821,100 @@ def create_app(
         log.info(tr("פרופיל הבוט בשרת %s עודכן"), guild["name"])
         return saved
 
+    # ---- bot character (persona) per server -----------------------------------------------
+    class PersonaIn(BaseModel):
+        persona: dict
+        apply_profile: bool = False
+        avatar: str | None = None
+
+    class PersonaGenIn(BaseModel):
+        name: str
+        universe: str = ""
+
+    class PersonaTestIn(BaseModel):
+        persona: dict
+        messages: list[dict]
+
+    def _chat_cfg(gid: str) -> dict:
+        return catalog.merged_config("claude_chat", store.raw_config(gid, "claude_chat"), store.guild_lang(gid))
+
+    @app.get("/api/guilds/{gid}/persona")
+    async def get_persona(gid: str):
+        from . import persona
+
+        guild = _guild_or_404(gid)
+        return {"persona": persona.clean(guild["config"].get("_persona")), "sliders": persona.sliders_json(),
+                "categories": [[k, label] for k, label in persona.CATEGORIES]}
+
+    @app.put("/api/guilds/{gid}/persona")
+    async def put_persona(gid: str, body: PersonaIn):
+        from . import persona
+
+        guild = _guild_or_404(gid)
+        try:
+            p = persona.validate(body.persona)
+        except ValueError as exc:
+            raise err(400, str(exc))
+        if body.apply_profile and p["name"]:  # the character's name (and picture) become the bot's profile in this server
+            owner = manager.owner_of(gid) if hasattr(manager, "owner_of") else None
+            if owner is None:
+                raise err(409, tr("הבוט צריך להיות מחובר ובשרת הזה"))
+            try:
+                member = await discord_rest.update_member_profile(secrets_store.get(owner.token_name), gid,
+                                                                  nick=p["name"][:32], avatar=body.avatar or None)
+            except ValueError as exc:
+                raise err(400, str(exc))
+            except discord_rest.DiscordAPIError as exc:
+                raise _discord_error(exc)
+            uid = str((member.get("user") or {}).get("id") or "")
+            url = discord_rest.member_asset_url(gid, uid, member, "avatar")
+            if url:
+                p["avatar_url"] = url
+            profile = dict(guild["config"].get("_profile") or {})
+            profile.update({"nick": member.get("nick") or "", **({"avatar_url": url} if url else {})})
+            store.set_config(gid, "_profile", profile)
+        store.set_config(gid, "_persona", p)
+        log.info(tr("הדמות של הבוט בשרת %s נשמרה (%s)"), guild["name"], p["name"] or "-")
+        return {"persona": p}
+
+    @app.post("/api/guilds/{gid}/persona/generate")
+    async def generate_persona(gid: str, body: PersonaGenIn):
+        from . import persona
+        from .modules.claude_chat import ai_complete
+
+        _guild_or_404(gid)
+        name = body.name.strip()[:80]
+        if not name:
+            raise err(400, tr("לדמות צריך שם"))
+        lang = i18n.LANGS[store.get_settings()["ui_lang"]]["name"]
+        prompt = persona.GENERATE_PROMPT.format(name=name, universe=f" from {body.universe.strip()[:80]}" if body.universe.strip() else "",
+                                                language=lang)
+        try:
+            text = await ai_complete(store, _chat_cfg(gid), "You write character profiles as JSON.",
+                                     [{"role": "user", "content": prompt}], max_tokens=1200)
+            return persona.parse_generated(text)
+        except ValueError as exc:
+            raise err(400, str(exc))
+
+    @app.post("/api/guilds/{gid}/persona/test")
+    async def test_persona(gid: str, body: PersonaTestIn):
+        from . import persona
+        from .modules.claude_chat import LANGUAGE_RULE, ai_complete
+
+        _guild_or_404(gid)
+        p = persona.clean({**body.persona, "enabled": True})
+        if not p["name"]:
+            raise err(400, tr("לדמות צריך שם"))
+        msgs = [{"role": m.get("role"), "content": str(m.get("content") or "")[:2000]} for m in body.messages[-20:]
+                if m.get("role") in ("user", "assistant") and str(m.get("content") or "").strip()]
+        if not msgs or msgs[-1]["role"] != "user":
+            raise err(400, tr("כתוב הודעה"))
+        try:
+            reply = await ai_complete(store, _chat_cfg(gid), persona.build_prompt(p) + LANGUAGE_RULE, msgs)
+        except ValueError as exc:
+            raise err(400, str(exc))
+        return {"reply": reply}
+
     @app.get("/api/guilds/{gid}/social/status")
     async def social_status(gid: str):
         _guild_or_404(gid)

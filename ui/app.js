@@ -370,7 +370,12 @@ function render() {
   const p = S.page;
   if (p === "dashboard") { main.innerHTML = viewDashboard(); renderDashboardStats(); renderLogs(); }
   else if (p === "connection") main.innerHTML = viewConnection();
-  else if (p === "profile") { main.innerHTML = viewProfile(); loadProfile(); loadServerProfile(); }
+  else if (p === "profile") {
+    main.innerHTML = viewProfile();
+    if (!S.profile) loadProfile();
+    if (!S.serverProfile || S.serverProfile.gid !== S.guildId) loadServerProfile();
+    if (profileScope() === "character" && (!S.persona || S.persona.gid !== S.guildId)) loadPersona();
+  }
   else if (p === "permissions") main.innerHTML = viewPermissions();
   else if (p === "updates") { main.innerHTML = viewUpdates(); loadUpdates(); }
   else if (p === "console") { main.innerHTML = viewConsole(); afterConsoleRender(); }
@@ -556,6 +561,7 @@ function presenceDraft() {
 }
 
 function profileScope() {
+  if (S.guild && S.profileScope === "character") return "character";
   return S.guild && S.profileScope !== "default" ? "server" : "default";
 }
 
@@ -614,11 +620,13 @@ function viewProfile() {
   const scopeBar = S.guild ? `
     <div class="tabs" style="margin-bottom:14px">
       <button class="tab ${server ? "active" : ""}" data-action="profile-scope" data-scope="server">${esc(t("השרת הזה"))}: <span class="no-translate">${esc(S.guild.name)}</span></button>
-      <button class="tab ${server ? "" : "active"}" data-action="profile-scope" data-scope="default">${esc(t("פרופיל ברירת מחדל (כל השרתים)"))}</button>
+      <button class="tab ${!server && profileScope() === "default" ? "active" : ""}" data-action="profile-scope" data-scope="default">${esc(t("פרופיל ברירת מחדל (כל השרתים)"))}</button>
+      <button class="tab ${profileScope() === "character" ? "active" : ""}" data-action="profile-scope" data-scope="character">🎭 ${esc(t("דמות (AI)"))}</button>
     </div>
     <p class="desc" style="margin:-4px 0 14px">${esc(server
       ? t("התמונה, הבאנר, השם והביו כאן נראים רק בשרת הזה. מחליפים שרת למעלה כדי לערוך שרת אחר.")
       : t("הפרופיל שכל השרתים רואים, חוץ משרתים שקבעת להם פרופיל משלהם."))}</p>` : "";
+  if (profileScope() === "character") return scopeBar.replace(/<p class="desc"[\s\S]*?<\/p>/, "") + viewCharacter();
   if (server && v.loading) return scopeBar + `<div class="card section empty">${esc(t("טוען…"))}</div>`;
   if (server && !v.ready) return scopeBar + `<div class="notice warn">${esc(t("הבוט צריך להיות מחובר ובשרת הזה כדי לערוך את הפרופיל שלו כאן."))}</div>`;
   const ids = server ? { avatar: "sp-avatar-file", banner: "sp-banner-file" } : { avatar: "avatar-file", banner: "banner-file" };
@@ -1663,7 +1671,10 @@ const actions = {
       await loadServerProfile();
     });
   },
-  "profile-scope"(btn) { S.profileScope = btn.dataset.scope; S.spAvatar = null; S.spBanner = null; render(); },
+  "profile-scope"(btn) {
+    S.profileScope = btn.dataset.scope; S.spAvatar = null; S.spBanner = null; render();
+    if (btn.dataset.scope === "character" && (!S.persona || S.persona.gid !== S.guildId)) loadPersona();
+  },
   "sp-discard"(btn) { if (btn.dataset.field === "banner") S.spBanner = null; else S.spAvatar = null; $("#main").innerHTML = viewProfile(); },
   async "sp-reset"(btn) {
     await guarded(btn, async () => {
@@ -2208,6 +2219,176 @@ document.addEventListener("keydown", (e) => {
   if (e.target.id === "chat-input" && e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
 });
 
+/* ===== Bot Profile -> Character (the AI talks as a character you describe, per server) ===== */
+const PERSONA_SLIDERS = [
+  ["length", "אורך תשובה", ["קצר", "בינוני", "ארוך", "ארוך מאוד"]],
+  ["demeanor", "התנהגות", ["לא מתעניין", "", "ניטרלי", "", "חקרן"]],
+  ["vulgarity", "רמת גסות", ["מנומס", "", "ניטרלי", "", "גס"]],
+  ["content", "תוכן", ["לכל המשפחה", "", "ניטרלי", "", "למבוגרים"]],
+];
+const PERSONA_TAGS = [["traits", "תכונות אופי"], ["loves", "אוהב"], ["hates", "שונא"]];
+
+async function loadPersona() {
+  if (!S.guildId) return;
+  try {
+    const d = await api("GET", `/guilds/${S.guildId}/persona`);
+    S.persona = { ...d, gid: S.guildId };
+    S.pDraft = JSON.parse(JSON.stringify(d.persona));
+    S.pAvatar = null; S.pChat = [];
+  } catch (e) { toast(errMessage(e), "error"); }
+  if (S.page === "profile") render();
+}
+
+function viewCharacter() {
+  if (!S.guild) return noGuild();
+  if (!S.persona || S.persona.gid !== S.guildId) return `<div class="card section empty">${esc(t("טוען…"))}</div>`;
+  const p = S.pDraft, d = S.persona;
+  const avatar = S.pAvatar || p.avatar_url || NONE_IMG;
+  const tagField = ([key, label]) => `
+    <div class="field wide"><span class="label">${esc(t(label))}</span>
+      <div class="tag-box" data-tags="${key}">
+        ${p[key].map((v, i) => `<span class="tag no-translate">${esc(v)}<button type="button" data-action="tag-remove" data-key="${key}" data-i="${i}">✕</button></span>`).join("")}
+        <input type="text" class="tag-input" data-tag-input="${key}" placeholder="${esc(t("כתוב ולחץ Enter"))}" maxlength="150">
+      </div></div>`;
+  const slider = ([key, label, ends]) => {
+    const n = d.sliders[key].length;
+    return `<div class="field wide p-slider"><span class="label">${esc(t(label))}</span>
+      <div class="p-ends">${ends.map((e) => `<span>${esc(e ? t(e) : "")}</span>`).join("")}</div>
+      <input type="range" min="0" max="${n - 1}" step="1" value="${p[key]}" data-ps="${key}">
+      <div class="hint" data-ps-label="${key}"><b>${esc(t("רמה {n}", { n: p[key] }))}:</b> ${esc(t(d.sliders[key][p[key]]))}</div></div>`;
+  };
+  return `
+    <div class="persona-grid">
+      <div class="card section">
+        <div class="row" style="margin-bottom:6px"><h3>${esc(t("פרופיל הדמות"))}</h3><div class="spacer"></div>
+          <label class="row small"><label class="switch"><input type="checkbox" data-pf="enabled" ${p.enabled ? "checked" : ""}><span class="slider"></span></label>
+          ${esc(t("ה-AI מדבר כדמות הזו בשרת הזה"))}</label></div>
+        <p class="desc" style="margin-bottom:12px">${esc(t("מספיק לכתוב שם של דמות מוכרת: ה-AI יודע איך היא מדברת ומתנהגת. שאר השדות לא חובה, והם רק מחדדים את הדמות. 'מלא אוטומטית' ממלא אותם בשבילך."))}</p>
+        <div class="form-grid">
+          <div class="field wide"><span class="label">${esc(t("שם"))} *</span>
+            <div class="row"><input type="text" class="grow" data-pf="name" value="${esc(p.name)}" maxlength="80" placeholder="Deadpool / Benjamin Netanyahu / ...">
+              <button class="btn" data-action="persona-generate">✨ ${esc(t("מלא אוטומטית מהשם"))}</button></div></div>
+          <div class="field"><span class="label">${esc(t("תמונה"))}</span>
+            <label class="pz-icon file-btn"><img alt="" src="${esc(avatar)}"><input type="file" id="pc-avatar-file" accept="image/png,image/jpeg,image/gif,image/webp"><span class="pz-edit">✎</span></label>
+            <span class="hint">${esc(t("משמשת כתמונת הבוט בשרת הזה אם מסמנים את האפשרות למטה"))}</span></div>
+          <div class="field"><span class="label">${esc(t("תיאור"))}</span><input type="text" data-pf="description" value="${esc(p.description)}" maxlength="200"></div>
+          <div class="field"><span class="label">${esc(t("קטגוריה"))}</span><select data-pf="category">${d.categories.map(([k, l]) => `<option value="${k}" ${k === p.category ? "selected" : ""}>${esc(t(l))}</option>`).join("")}</select></div>
+          <div class="field"><span class="label">${esc(t("יקום"))}</span><input type="text" data-pf="universe" value="${esc(p.universe)}" maxlength="80" placeholder="Marvel / Politics / ..."></div>
+          <div class="field wide"><span class="label">${esc(t("ביו"))}</span><textarea data-pf="bio" rows="3" maxlength="2000">${esc(p.bio)}</textarea></div>
+          ${PERSONA_TAGS.map(tagField).join("")}
+          <div class="field wide"><span class="label">${esc(t("עובדות על הדמות"))}</span>
+            <div id="p-facts">${p.facts.map((f, i) => `<div class="row" style="margin-bottom:6px"><input type="text" class="grow no-translate" data-fact="${i}" value="${esc(f)}" maxlength="150">
+              <button class="btn btn-sm btn-ghost" data-action="fact-remove" data-i="${i}">✕</button></div>`).join("")}</div>
+            <button class="btn btn-sm" data-action="fact-add">+ ${esc(t("הוסף עובדה"))}</button></div>
+          ${PERSONA_SLIDERS.map(slider).join("")}
+          <div class="row field-bool wide"><input type="checkbox" id="p-apply" ${S.pApply ? "checked" : ""}>
+            <label for="p-apply">${esc(t("להשתמש גם בשם ובתמונה של הדמות כפרופיל הבוט בשרת הזה"))}</label></div>
+        </div>
+        <div class="row" style="margin-top:14px"><div class="spacer"></div><button class="btn btn-primary" data-action="persona-save">${esc(t("שמור דמות"))}</button></div>
+      </div>
+      <div class="card section persona-chat">
+        <div class="row"><img class="chat-avatar" src="${esc(avatar)}" alt=""><b class="no-translate">${esc(p.name || t("הדמות"))}</b><div class="spacer"></div>
+          <button class="btn btn-sm btn-ghost" data-action="pchat-reset">${esc(t("איפוס"))}</button></div>
+        <p class="muted small" style="margin:6px 0">${esc(t("שיחת ניסיון עם הדמות לפני שמירה (משתמש בספק ה-AI שבחרת, ועולה טוקנים כרגיל)."))}</p>
+        <div id="pchat-box" class="chat-box">${viewPersonaChat()}</div>
+        <div class="row" style="margin-top:10px;align-items:flex-end">
+          <textarea id="pchat-input" rows="2" class="grow" placeholder="${esc(t("כתוב הודעה לדמות…"))}"></textarea>
+          <button class="btn btn-primary" data-action="pchat-send">${esc(t("שלח"))}</button></div>
+      </div>
+    </div>`;
+}
+
+function viewPersonaChat() {
+  const name = S.pDraft.name || t("הדמות");
+  if (!S.pChat || !S.pChat.length) return `<div class="muted small">${esc(t("כתוב משהו כדי לראות איך הדמות עונה."))}</div>`;
+  return S.pChat.map((m) => `<div class="chat-msg no-translate"><div class="grow"><b>${esc(m.role === "user" ? t("אתה") : name)}</b>
+      <div class="chat-text">${esc(m.content)}</div></div></div>`).join("") + (S.pTyping ? `<div class="muted small">${esc(t("{name} מקליד…", { name }))}</div>` : "");
+}
+
+function refreshPersonaChat() {
+  const box = $("#pchat-box");
+  if (box) { box.innerHTML = viewPersonaChat(); box.scrollTop = box.scrollHeight; }
+}
+
+async function sendPersonaChat() {
+  const input = $("#pchat-input");
+  const text = input.value.trim();
+  if (!text || S.pTyping) return;
+  if (!S.pDraft.name) { toast("לדמות צריך שם", "error"); return; }
+  S.pChat.push({ role: "user", content: text });
+  input.value = "";
+  S.pTyping = true; refreshPersonaChat();
+  try {
+    const r = await api("POST", `/guilds/${S.guildId}/persona/test`, { persona: S.pDraft, messages: S.pChat });
+    S.pChat.push({ role: "assistant", content: r.reply });
+  } catch (e) { S.pChat.pop(); toast(errMessage(e), "error"); }
+  S.pTyping = false; refreshPersonaChat();
+}
+
+Object.assign(actions, {
+  async "persona-generate"(btn) {
+    if (!S.pDraft.name.trim()) { toast("לדמות צריך שם", "error"); return; }
+    await guarded(btn, async () => {
+      const g = await api("POST", `/guilds/${S.guildId}/persona/generate`, { name: S.pDraft.name, universe: S.pDraft.universe });
+      Object.assign(S.pDraft, g);
+      render();
+      toast("הפרופיל מולא. אפשר לערוך ולשמור.", "ok");
+    });
+  },
+  async "persona-save"(btn) {
+    S.pApply = !!($("#p-apply") || {}).checked;
+    await guarded(btn, async () => {
+      const r = await api("PUT", `/guilds/${S.guildId}/persona`, { persona: S.pDraft, apply_profile: S.pApply, avatar: S.pApply ? S.pAvatar : null });
+      S.persona.persona = r.persona; S.pDraft = JSON.parse(JSON.stringify(r.persona)); S.pAvatar = null;
+      if (S.pApply) S.serverProfile = null;
+      render();
+      toast(r.persona.enabled ? "הדמות נשמרה. ה-AI מדבר כמוה מעכשיו." : "הדמות נשמרה (כבויה).", "ok");
+    });
+  },
+  "tag-remove"(btn) { S.pDraft[btn.dataset.key].splice(+btn.dataset.i, 1); render(); },
+  "fact-add"() { S.pDraft.facts.push(""); render(); const inputs = document.querySelectorAll("[data-fact]"); if (inputs.length) inputs[inputs.length - 1].focus(); },
+  "fact-remove"(btn) { S.pDraft.facts.splice(+btn.dataset.i, 1); render(); },
+  "pchat-send"() { sendPersonaChat(); },
+  "pchat-reset"() { S.pChat = []; refreshPersonaChat(); },
+});
+
+document.addEventListener("input", (e) => {
+  const el = e.target;
+  if (!S.pDraft || S.page !== "profile") return;
+  if (el.dataset.pf && el.type !== "checkbox") S.pDraft[el.dataset.pf] = el.value;
+  if (el.dataset.fact !== undefined) S.pDraft.facts[+el.dataset.fact] = el.value;
+  if (el.dataset.ps) {
+    const key = el.dataset.ps, v = +el.value;
+    S.pDraft[key] = v;
+    const lbl = document.querySelector(`[data-ps-label="${key}"]`);
+    if (lbl) lbl.innerHTML = `<b>${esc(t("רמה {n}", { n: v }))}:</b> ${esc(t(S.persona.sliders[key][v]))}`;
+  }
+});
+document.addEventListener("change", (e) => {
+  const el = e.target;
+  if (!S.pDraft || S.page !== "profile") return;
+  if (el.dataset.pf === "enabled") S.pDraft.enabled = el.checked;
+  if (el.dataset.pf === "category") S.pDraft.category = el.value;
+  if (el.id === "p-apply") S.pApply = el.checked;
+  if (el.id === "pc-avatar-file" && el.files[0]) {
+    if (el.files[0].size > 8 * 1024 * 1024) { toast("התמונה גדולה מדי (עד 8MB)", "error"); return; }
+    const reader = new FileReader();
+    reader.onload = () => { S.pAvatar = reader.result; S.pApply = true; render(); };
+    reader.readAsDataURL(el.files[0]);
+  }
+});
+document.addEventListener("keydown", (e) => {
+  const el = e.target;
+  if (el.dataset && el.dataset.tagInput && e.key === "Enter") {
+    e.preventDefault();
+    const v = el.value.trim(), key = el.dataset.tagInput;
+    if (v && !S.pDraft[key].includes(v) && S.pDraft[key].length < 15) S.pDraft[key].push(v);
+    render();
+    const again = document.querySelector(`[data-tag-input="${key}"]`); if (again) again.focus();
+  }
+  if (el.id === "pchat-input" && e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendPersonaChat(); }
+});
+
 /* ===== mouse Back / Forward buttons and Alt+Left / Alt+Right ===== */
 let lastNavStep = 0;
 async function navStep(dir) {
@@ -2274,7 +2455,7 @@ document.addEventListener("change", async (e) => {
     S.guildId = t.value;
     S.cust = null;
     await loadGuild();
-    if (S.page === "profile") { S.serverProfile = null; render(); loadServerProfile(); }
+    if (S.page === "profile") { S.serverProfile = null; S.persona = null; render(); loadServerProfile(); if (profileScope() === "character") loadPersona(); }
     if (S.page === "customize") render(), afterCustomizeRender();
     return;
   }

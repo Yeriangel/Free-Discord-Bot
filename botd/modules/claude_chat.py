@@ -75,6 +75,67 @@ def yes_no(text: str) -> bool | None:
     return None
 
 
+def character_prompt(store, guild, channel) -> str:
+    """The server's character instructions (Bot Profile -> Character), or "" when no character is on.
+    Extra instructions the owner wrote on the AI Chat page are added after the character."""
+    if guild is None:
+        return ""
+    from .. import persona
+
+    gid = str(guild.id)
+    p = persona.clean((store.get_guild(gid) or {}).get("config", {}).get("_persona"))
+    if not p["enabled"] or not p["name"]:
+        return ""
+    text = persona.build_prompt(p, nsfw_channel=bool(getattr(channel, "nsfw", False)))
+    own = str((store.raw_config(gid, "claude_chat") or {}).get("system_prompt") or "").strip()
+    return text + (f"\n\nExtra instructions from the server owner:\n{own}" if own else "")
+
+
+async def ai_complete(store, cfg: dict, system: str, messages: list[dict], max_tokens: int = 800) -> str:
+    """One plain AI answer (no tools) with the provider and model chosen on the AI Chat page.
+    Used by the app's character test chat and the 'fill from name' button."""
+    provider = cfg.get("provider") or "claude"
+    if provider not in ai_providers.PROVIDERS:
+        provider = "claude"
+    name = ai_providers.PROVIDERS[provider]["name"]
+    key = secrets_store.get(ai_providers.PROVIDERS[provider]["secret"])
+    if not key:
+        raise ValueError(tr("עוד לא הוגדר מפתח API של {name} באפליקציה.", name=name))
+    if provider == "claude":
+        model = str(cfg.get("custom_model") or "").strip() or MODELS.get(cfg.get("model", "haiku"), MODEL)
+        try:
+            async with anthropic.AsyncAnthropic(api_key=key, max_retries=2, timeout=60) as client:
+                resp = await client.messages.create(model=model, max_tokens=max_tokens, system=system, messages=messages)
+        except anthropic.AuthenticationError:
+            raise ValueError(tr("מפתח ה-API של {name} לא תקין. עדכן אותו באפליקציה.", name=name)) from None
+        except anthropic.APIError as exc:
+            raise ValueError(tr("{name} החזיר שגיאה: {error}", name=name, error=type(exc).__name__)) from None
+        text = "\n".join(b.text for b in resp.content if b.type == "text").strip()
+    else:
+        model = ai_providers.model_for(provider, cfg)
+        try:
+            resp = await ai_providers.chat(provider, key, model, system, messages, [], max_tokens)
+        except ai_providers.ProviderError as exc:
+            raise ValueError(tr("{name} החזיר שגיאה: {error}", name=name, error=exc.kind)) from None
+        text = "\n".join(b.text for b in resp.content if b.type == "text").strip()
+    record_usage(store, resp.usage, getattr(resp, "model", None) or model, count=True)
+    return text or "…"
+
+
+def record_usage(store, usage, model: str, count: bool = True) -> dict:
+    key = usage_key()
+    data = store.get_kv(key, {"messages": 0, "input_tokens": 0, "output_tokens": 0})
+    tin, tout = int(getattr(usage, "input_tokens", 0) or 0), int(getattr(usage, "output_tokens", 0) or 0)
+    data["messages"] += 1 if count else 0
+    data["input_tokens"] += tin
+    data["output_tokens"] += tout
+    per = data.setdefault("by_model", {}).setdefault(model, [0, 0])
+    per[0] += tin
+    per[1] += tout
+    store.set_kv(key, data)
+    return data
+
+
 def usage_key(day: dt.date | None = None) -> str:
     return f"claude_usage:{(day or dt.date.today()).isoformat()}"
 
@@ -209,6 +270,9 @@ class ClaudeChat(commands.Cog):
                     else:
                         model = ai_providers.model_for(provider, cfg)
                     system = (cfg["system_prompt"] or "You are a helpful assistant.") + LANGUAGE_RULE
+                    character = character_prompt(self.bot.store, message.guild, message.channel)
+                    if character:
+                        system = character + LANGUAGE_RULE
                     in_guild = message.guild is not None and isinstance(message.author, discord.Member)
                     tools = claude_actions.available_tools(self.bot, message.guild, bool(cfg.get("allow_actions"))) if in_guild else []
                     if tools:
