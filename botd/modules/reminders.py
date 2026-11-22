@@ -39,6 +39,11 @@ class Reminders(commands.Cog):
 
     async def _personal(self, now: float) -> None:
         for r in self.bot.store.due_reminders(now):
+            fleet = self.bot.manager.fleet
+            if r["guild_id"] and not self.bot.manager.owns(r["guild_id"]):
+                continue  # another of your bots runs that server
+            if not r["guild_id"] and fleet is not None and fleet.extras and self.bot.manager is not fleet.main:
+                continue  # reminders from DMs are sent by the main bot
             self.bot.store.delete_reminder(r["id"])
             guild = self.bot.get_guild(int(r["guild_id"])) if r["guild_id"] else None
             lang = self.bot.lang(guild)

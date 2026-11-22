@@ -97,8 +97,8 @@ class Warnings(commands.Cog):
     async def unban_loop(self) -> None:
         for row in self.bot.store.due_tempbans(time.time()):
             guild = self.bot.get_guild(int(row["guild_id"]))
-            if guild is None:
-                continue  # not connected to that server right now; try again later
+            if guild is None or not self.bot.manager.owns(row["guild_id"]):
+                continue  # not connected to that server right now (or another of your bots runs it); try again later
             try:
                 await guild.unban(discord.Object(int(row["user_id"])), reason=tr("סוף חסימה זמנית", self.bot.lang(guild)))
                 log.info(tr("חסימה זמנית הסתיימה למשתמש %s בשרת %s"), row["user_id"], guild.name)

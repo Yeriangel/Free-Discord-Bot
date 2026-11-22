@@ -303,6 +303,73 @@ def test_twitch_alerts():
     print("ok twitch: keyless live detection, one alert per stream, embed with game and preview, test button")
 
 
+def test_bot_accounts_and_server_profile():
+    import base64
+
+    from botd import discord_rest, secrets_store
+    from botd.bot import BotFleet
+
+    secrets_store._check("bot_token_a1b2c3")
+    try:
+        secrets_store._check("bot_token_../evil")
+        raise AssertionError("bad secret name accepted")
+    except KeyError:
+        pass
+
+    store, _ = make_env()
+    store.upsert_guild("222222222222222222", "Second")
+    store.set_guild_lang(GID, "en")
+    fleet = BotFleet(store)
+    assert fleet.main.owns(GID)                    # one bot: it runs everything
+    extra = fleet.add_account("Second bot")
+    assert BotFleet(store).extras.keys() == fleet.extras.keys()  # accounts are remembered
+
+    def fake_bot(guild_ids, account):
+        b = MagicMock()
+        b.get_guild = lambda gid: SimpleNamespace(id=gid) if str(gid) in guild_ids else None
+        b.manager = account
+        return b
+    fleet.main.bot, fleet.main.state = fake_bot({GID}, fleet.main), "connected"
+    extra.bot, extra.state = fake_bot({GID, "222222222222222222"}, extra), "connected"
+    assert fleet.owner_of(GID) is fleet.main                       # both there: the main bot by default
+    assert fleet.owner_of("222222222222222222") is extra           # only the extra bot is there
+    store.set_guild_bot(GID, extra.account_id)                     # the user picks the extra bot for this server
+    assert fleet.owner_of(GID) is extra and extra.owns(GID) and not fleet.main.owns(GID)
+    assert store.guild_lang(GID) == "en"                           # choosing a bot keeps the language...
+    store.set_guild_lang(GID, "ru")
+    assert store.guild_bot(GID) == extra.account_id                # ...and the language keeps the bot
+    store.set_module(GID, "levels", True)
+    main_bot = ManagedBot(fleet.main, {"members": True, "message_content": True})
+    extra_bot = ManagedBot(extra, {"members": True, "message_content": True})
+    guild = SimpleNamespace(id=int(GID))
+    assert main_bot.cfg(guild, "levels") is None and extra_bot.cfg(guild, "levels") is not None  # no double answers
+    assert {a["id"] for a in fleet.accounts_status()} == {"main", extra.account_id}
+
+    calls = []
+
+    async def fake_request(method, path, token, json=None):
+        calls.append((method, path, json))
+        return {"nick": json.get("nick"), "avatar": "abc", "user": {"id": "42"}}
+    original = discord_rest._request
+    discord_rest._request = fake_request
+    try:
+        png = "data:image/png;base64," + base64.b64encode(b"\x89PNG....").decode()
+        member = asyncio.run(discord_rest.update_member_profile("tok", GID, nick="Helper", avatar=png, bio="Hi there"))
+        asyncio.run(discord_rest.update_member_profile("tok", GID, reset=("avatar", "banner")))
+    finally:
+        discord_rest._request = original
+    assert calls[0][1] == f"/guilds/{GID}/members/@me" and calls[0][2] == {"nick": "Helper", "avatar": png, "bio": "Hi there"}
+    assert calls[1][2] == {"avatar": None, "banner": None}
+    assert discord_rest.member_asset_url(GID, "42", member, "avatar").endswith(f"/guilds/{GID}/users/42/avatars/abc.png?size=256")
+    try:
+        asyncio.run(discord_rest.update_member_profile("tok", GID, nick="x" * 40))
+        raise AssertionError("long nick accepted")
+    except ValueError:
+        pass
+    store.close()
+    print("ok several bot accounts: who runs each server, no double answers; per-server bot profile")
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

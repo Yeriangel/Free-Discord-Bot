@@ -87,6 +87,7 @@ class ModuleIn(BaseModel):
 class InviteIn(BaseModel):
     permissions: list[str]
     guild_id: str = ""
+    account: str = ""
 
 
 def _require_token() -> str:
@@ -333,7 +334,11 @@ def create_app(
         if not valid_snowflake(body.guild_id):
             raise err(400, tr("מזהה שרת לא תקין"))
         try:
-            app_info = await discord_rest.get_application(_require_token())
+            acc = manager.get(body.account) if hasattr(manager, "get") and body.account else None
+            token = secrets_store.get(acc.token_name) if acc is not None else _require_token()
+            if not token:
+                raise err(400, tr("לא הוגדר Bot Token"))
+            app_info = await discord_rest.get_application(token)
             url = catalog.invite_url(str(app_info["id"]), body.permissions, body.guild_id)
         except ValueError as exc:
             raise err(400, str(exc))
@@ -393,16 +398,17 @@ def create_app(
         log.info(tr("ההגדרות של %s עודכנו בשרת %s"), key, guild["name"])
         return _guild_view(gid)
 
-    def _rr_cog():
-        cog = manager.bot.get_cog("ReactionRoles") if manager.bot is not None else None
-        if cog is None or manager.state != "connected":
+    def _rr_cog(gid: str = ""):
+        bot = manager.bot_for(gid) if gid and hasattr(manager, "bot_for") else manager.bot
+        cog = bot.get_cog("ReactionRoles") if bot is not None else None
+        if cog is None:
             raise err(409, tr("הבוט צריך להיות מחובר כדי לפרסם הודעה בדיסקורד"))
         return cog
 
     @app.post("/api/guilds/{gid}/reaction-roles")
     async def add_reaction_roles(gid: str, body: ReactionRoleIn):
         _guild_or_404(gid)
-        cog = _rr_cog()
+        cog = _rr_cog(gid)
         guild = manager.live_guild(gid)
         if guild is None:
             raise err(409, tr("הבוט לא נמצא בשרת הזה"))
@@ -422,7 +428,7 @@ def create_app(
             raise err(404, tr("ההודעה לא נמצאה"))
         cog = manager.bot.get_cog("ReactionRoles") if manager.bot is not None else None
         if delete_message:
-            cog = _rr_cog()
+            cog = _rr_cog(gid)
         if cog is not None:
             await cog.remove(gid, message_id, delete_message)
         else:
@@ -592,6 +598,11 @@ def create_app(
         return {"id": str(msg.id)}
 
     # ---- newer modules: actions and data views -------------------------------------
+    def _cog(gid: str, name: str):
+        """A module of the bot account that runs this server."""
+        bot = manager.bot_for(gid) if hasattr(manager, "bot_for") else manager.bot
+        return bot.get_cog(name) if bot is not None else None
+
     def _live(gid: str) -> discord.Guild:
         _guild_or_404(gid)
         guild = manager.live_guild(gid)
@@ -620,7 +631,7 @@ def create_app(
     @app.post("/api/guilds/{gid}/ticket-panel")
     async def ticket_panel(gid: str):
         guild = _live(gid)
-        cog = manager.bot.get_cog("Ticketing") if manager.bot else None
+        cog = _cog(gid, "Ticketing")
         try:
             msg = await cog.publish_panel(guild)
         except ValueError as exc:
@@ -628,6 +639,103 @@ def create_app(
         except discord.HTTPException as exc:
             raise err(400, tr("דיסקורד דחה את ההודעה: {error}", error=exc.text or exc.status))
         return {"ok": True, "url": msg.jump_url}
+
+    # ---- bot accounts (several tokens) and the bot's profile in each server -------------------
+    class AccountIn(BaseModel):
+        label: str = ""
+        token: str
+
+    class GuildBotIn(BaseModel):
+        account: str = ""
+
+    class MemberProfileIn(BaseModel):
+        nick: str | None = None
+        avatar: str | None = None
+        banner: str | None = None
+        bio: str | None = None
+        reset: list[str] = []
+
+    @app.get("/api/accounts")
+    async def list_accounts():
+        return manager.accounts_status()
+
+    @app.post("/api/accounts")
+    async def add_account(body: AccountIn):
+        token = body.token.strip()
+        try:
+            me = await discord_rest.get_me(token)
+        except discord_rest.DiscordAPIError as exc:
+            raise _discord_error(exc)
+        for m in manager.managers():  # the same bot twice would answer twice
+            existing = secrets_store.get(m.token_name)
+            if existing and (existing == token or (m.bot and m.bot.user and str(m.bot.user.id) == str(me.get("id")))):
+                raise err(400, tr("הבוט הזה כבר מחובר לאפליקציה"))
+        acc = manager.add_account(body.label.strip() or me.get("username", ""))
+        secrets_store.set(acc.token_name, token)
+        log.info(tr("נוסף חשבון בוט: %s"), me.get("username"))
+        if manager.main.task is not None and not manager.main.task.done():
+            try:
+                await acc.start()
+            except ValueError as exc:
+                log.warning("%s", exc)
+        return manager.accounts_status()
+
+    @app.delete("/api/accounts/{account_id}")
+    async def delete_account(account_id: str):
+        if account_id == "main" or account_id not in manager.extras:
+            raise err(404, tr("לא נמצא"))
+        await manager.remove_account(account_id)
+        for g in store.list_guilds():
+            if store.guild_bot(g["id"]) == account_id:
+                store.set_guild_bot(g["id"], "")
+        return manager.accounts_status()
+
+    @app.put("/api/guilds/{gid}/bot")
+    async def set_guild_bot(gid: str, body: GuildBotIn):
+        _guild_or_404(gid)
+        if body.account and manager.get(body.account) is None:
+            raise err(404, tr("לא נמצא"))
+        store.set_guild_bot(gid, body.account if body.account != "main" else "main")
+        return _guild_view(gid)
+
+    @app.get("/api/guilds/{gid}/member-profile")
+    async def get_member_profile(gid: str):
+        _guild_or_404(gid)
+        owner = manager.owner_of(gid)
+        saved = (store.get_guild(gid) or {}).get("config", {}).get("_profile") or {}
+        out = {"account": owner.account_id if owner else None, "nick": saved.get("nick", ""), "bio": saved.get("bio", ""),
+               "avatar_url": saved.get("avatar_url", ""), "banner_url": saved.get("banner_url", ""),
+               "default_name": "", "default_avatar": ""}
+        if owner is not None and owner.bot is not None and owner.bot.user is not None:
+            out["default_name"] = owner.bot.user.name
+            out["default_avatar"] = owner.bot.user.display_avatar.with_size(128).url
+            me = owner.bot.get_guild(int(gid)).me
+            out["nick"] = me.nick or ""
+        return out
+
+    @app.put("/api/guilds/{gid}/member-profile")
+    async def put_member_profile(gid: str, body: MemberProfileIn):
+        guild = _guild_or_404(gid)
+        owner = manager.owner_of(gid)
+        if owner is None:
+            raise err(409, tr("הבוט צריך להיות מחובר ובשרת הזה"))
+        token = secrets_store.get(owner.token_name)
+        try:
+            member = await discord_rest.update_member_profile(token, gid, body.nick, body.avatar, body.banner, body.bio,
+                                                              tuple(body.reset))
+        except ValueError as exc:
+            raise err(400, str(exc))
+        except discord_rest.DiscordAPIError as exc:
+            raise _discord_error(exc)
+        uid = str((member.get("user") or {}).get("id") or (owner.bot.user.id if owner.bot and owner.bot.user else ""))
+        saved = {"nick": member.get("nick") or "", "bio": member.get("bio") or (body.bio or ""),
+                 "avatar_url": discord_rest.member_asset_url(gid, uid, member, "avatar"),
+                 "banner_url": discord_rest.member_asset_url(gid, uid, member, "banner")}
+        if "bio" in body.reset:
+            saved["bio"] = ""
+        store.set_config(gid, "_profile", saved)
+        log.info(tr("פרופיל הבוט בשרת %s עודכן"), guild["name"])
+        return saved
 
     @app.get("/api/guilds/{gid}/social/status")
     async def social_status(gid: str):
@@ -645,7 +753,7 @@ def create_app(
         cfg = catalog.merged_config("social_alerts", store.raw_config(gid, "social_alerts"))
         if not 0 <= index < len(cfg["feeds"]):
             raise err(404, tr("לא נמצא"))
-        cog = manager.bot.get_cog("SocialAlerts") if manager.bot else None
+        cog = _cog(gid, "SocialAlerts")
         try:
             text = await cog.preview(guild, cfg["feeds"][index], send=send)
         except ValueError as exc:

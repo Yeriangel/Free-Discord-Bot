@@ -24,27 +24,45 @@ HELP = [
 ]
 
 
+def _bots(manager) -> list:
+    if hasattr(manager, "all_bots"):
+        return manager.all_bots()
+    return [manager.bot] if manager.bot is not None and manager.state == "connected" else []
+
+
+def _all_guilds(manager) -> list:
+    seen, out = set(), []
+    for bot in _bots(manager):
+        for g in bot.guilds:
+            if g.id not in seen:
+                seen.add(g.id)
+                out.append(g)
+    return out
+
+
 def _guild(manager, ref: str):
-    bot = manager.bot
-    if bot is None or manager.state != "connected":
+    guilds = _all_guilds(manager)
+    if not guilds:
         return None
     ref = ref.strip().lower()
-    for g in bot.guilds:
+    for g in guilds:
         if ref in (str(g.id), g.name.lower()):
             return g
-    matches = [g for g in bot.guilds if ref in g.name.lower()]
+    matches = [g for g in guilds if ref in g.name.lower()]
     return matches[0] if len(matches) == 1 else None
 
 
 def _channel(manager, ref: str):
-    bot = manager.bot
     ref = ref.strip().lstrip("#")
     if ref.startswith("<#") and ref.endswith(">"):
         ref = ref[2:-1]
     if ref.isdigit():
-        ch = bot.get_channel(int(ref))
-        return ch if ch is not None and hasattr(ch, "send") else None
-    matches = [c for g in bot.guilds for c in g.text_channels if c.name.lower() == ref.lower()]
+        for bot in _bots(manager):
+            ch = bot.get_channel(int(ref))
+            if ch is not None and hasattr(ch, "send"):
+                return ch
+        return None
+    matches = [c for g in _all_guilds(manager) for c in g.text_channels if c.name.lower() == ref.lower()]
     return matches[0] if len(matches) == 1 else None
 
 
@@ -57,7 +75,7 @@ async def run_command(manager, store, line: str) -> list[str]:
     except ValueError:
         parts = line.split()
     cmd, args = parts[0].lower(), parts[1:]
-    online = manager.bot is not None and manager.state == "connected"
+    online = bool(_bots(manager))
     need_online = tr("הבוט לא מחובר. הקלד start כדי להפעיל אותו.")
 
     if cmd in ("help", "?"):
@@ -84,11 +102,12 @@ async def run_command(manager, store, line: str) -> list[str]:
     if cmd == "servers":
         if not online:
             return [need_online]
-        return [f"{g.id}  {g.name}  ({g.member_count})" for g in manager.bot.guilds] or [tr("הבוט לא נמצא באף שרת.")]
+        return [f"{g.id}  {g.name}  ({g.member_count})" for g in _all_guilds(manager)] or [tr("הבוט לא נמצא באף שרת.")]
     if cmd == "channels":
         if not online:
             return [need_online]
-        guild = _guild(manager, " ".join(args)) if args else (manager.bot.guilds[0] if len(manager.bot.guilds) == 1 else None)
+        guilds = _all_guilds(manager)
+        guild = _guild(manager, " ".join(args)) if args else (guilds[0] if len(guilds) == 1 else None)
         if guild is None:
             return [tr("לא מצאתי את השרת. כתוב channels ואז שם או מזהה של שרת.")]
         return [f"{c.id}  #{c.name}" + (f"  · {c.category.name}" if c.category else "") for c in guild.text_channels]

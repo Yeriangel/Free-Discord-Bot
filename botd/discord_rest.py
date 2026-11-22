@@ -141,6 +141,41 @@ async def update_me(token: str, username: str | None = None, avatar_data_uri: st
     return await _request("PATCH", "/users/@me", token, json=payload)
 
 
+async def update_member_profile(token: str, guild_id: str, nick: str | None = None, avatar: str | None = None,
+                                banner: str | None = None, bio: str | None = None, reset: tuple = ()) -> dict:
+    """The bot's profile in ONE server (nickname, avatar, banner, bio). Other servers keep the normal profile.
+    Fields in `reset` go back to the bot's normal profile."""
+    payload: dict = {}
+    if nick is not None:
+        nick = nick.strip()
+        if len(nick) > 32:
+            raise ValueError(tr("הכינוי ארוך מדי (עד 32 תווים)"))
+        payload["nick"] = nick or None
+    if avatar:
+        payload["avatar"] = validate_avatar_data_uri(avatar)
+    if banner:
+        payload["banner"] = validate_avatar_data_uri(banner)
+    if bio is not None:
+        if len(bio) > 190:
+            raise ValueError(tr("הביו ארוך מדי (עד 190 תווים)"))
+        payload["bio"] = bio.strip() or None
+    for field in reset:
+        if field in ("avatar", "banner", "bio", "nick"):
+            payload[field] = None
+    if not payload:
+        raise ValueError(tr("אין מה לעדכן"))
+    return await _request("PATCH", f"/guilds/{guild_id}/members/@me", token, json=payload)
+
+
+def member_asset_url(guild_id: str, user_id: str, member: dict, kind: str) -> str:
+    h = member.get(kind)
+    if not h:
+        return ""
+    folder = "avatars" if kind == "avatar" else "banners"
+    ext = "gif" if str(h).startswith("a_") else "png"
+    return f"https://cdn.discordapp.com/guilds/{guild_id}/users/{user_id}/{folder}/{h}.{ext}?size=256"
+
+
 def banner_url(user: dict) -> str:
     if user.get("banner"):
         ext = "gif" if str(user["banner"]).startswith("a_") else "png"

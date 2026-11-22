@@ -13,7 +13,9 @@ NAMES = ("bot_token", "anthropic_key", "openai_key", "xai_key", "twitch_client_i
 
 
 def _check(name: str) -> None:
-    if name not in NAMES:
+    import re
+
+    if name not in NAMES and not re.fullmatch(r"bot_token_[0-9a-f]{6}", name):
         raise KeyError(name)
 
 

@@ -363,7 +363,7 @@ function render() {
   const p = S.page;
   if (p === "dashboard") { main.innerHTML = viewDashboard(); renderDashboardStats(); renderLogs(); }
   else if (p === "connection") main.innerHTML = viewConnection();
-  else if (p === "profile") { main.innerHTML = viewProfile(); loadProfile(); }
+  else if (p === "profile") { main.innerHTML = viewProfile(); loadProfile(); loadServerProfile(); }
   else if (p === "permissions") main.innerHTML = viewPermissions();
   else if (p === "updates") { main.innerHTML = viewUpdates(); loadUpdates(); }
   else if (p === "console") { main.innerHTML = viewConsole(); afterConsoleRender(); }
@@ -452,6 +452,41 @@ function secretField(name, label, hint) {
     </div>`;
 }
 
+function viewAccounts() {
+  const accs = (S.status.accounts && S.status.accounts.length ? S.status.accounts : null);
+  const rows = (accs || []).filter((a) => !a.main).map((a) => `
+      <div class="row acc-row">
+        ${a.user ? `<img class="chat-avatar" src="${esc(a.user.avatar)}" alt="">` : `<span class="chat-avatar"></span>`}
+        <div class="grow"><b class="no-translate">${esc(a.label)}</b>${a.user ? ` <span class="muted small no-translate">${esc(a.user.name)}</span>` : ""}
+          <div class="muted small">${esc(t(STATE_LABELS[a.state] || a.state))}${a.guild_count != null ? " · " + esc(t("{n} שרתים", { n: a.guild_count })) : ""}${a.error ? " · " + esc(a.error) : ""}</div></div>
+        <button class="btn btn-sm btn-ghost" data-action="account-remove" data-id="${esc(a.id)}" data-label="${esc(a.label)}">${esc(t("הסר"))}</button>
+      </div>`).join("");
+  return `
+    <div class="card section">
+      <h3>${esc(t("חשבונות בוט נוספים"))}</h3>
+      <p class="desc" style="margin:6px 0 12px">${esc(t("רוצה בוט אחר (שם, תמונה וטוקן משלו) לשרת אחר? הוסף כאן את הטוקן שלו. כל הבוטים רצים יחד מהאפליקציה, ולכל שרת בוחרים איזה בוט מפעיל אותו. הבוט הראשי (הטוקן למעלה) ממשיך לעבוד כרגיל בשרתים שלו."))}</p>
+      ${rows || `<div class="muted small" style="margin-bottom:10px">${esc(t("אין עדיין חשבונות נוספים. הבוט הראשי מפעיל את כל השרתים."))}</div>`}
+      <div class="row" style="flex-wrap:wrap;margin-top:10px">
+        <input type="text" id="acc-label" placeholder="${esc(t("שם לחשבון (לא חובה)"))}" style="max-width:200px">
+        <input type="password" id="acc-token" class="ltr grow" placeholder="${esc(t("Bot Token של הבוט הנוסף"))}" autocomplete="off" spellcheck="false">
+        <button class="btn btn-primary" data-action="account-add">${esc(t("הוסף בוט"))}</button>
+      </div>
+      <span class="hint">${esc(t("הטוקן נשמר ב-Windows Credential Manager. אחרי ההוספה, הזמן את הבוט החדש לשרת שלו (בעמוד 'הרשאות והזמנה' בוחרים את הבוט החדש ויוצרים לו קישור הזמנה)."))}</span>
+    </div>`;
+}
+
+function guildBotSelect(g) {
+  const accs = S.status.accounts || [];
+  if (accs.length < 2) return "";
+  const present = (g.objects && g.objects.bots_present) || [];
+  const chosen = ((g.config && g.config._server) || {}).bot || "";
+  return `<label class="row guild-lang"><span class="label">${esc(t("הבוט בשרת הזה"))}</span>
+    <select id="guild-bot" class="no-translate" style="width:auto">
+      <option value="" ${!chosen ? "selected" : ""}>${esc(t("אוטומטי (הראשי, אם הוא בשרת)"))}</option>
+      ${accs.map((a) => `<option value="${esc(a.id)}" ${chosen === a.id ? "selected" : ""}>${esc(a.label)}${present.includes(a.id) ? " ✓" : ` (${esc(t("לא בשרת"))})`}</option>`).join("")}
+    </select></label>`;
+}
+
 function toggleRow(key, label, checked) {
   return `<div class="row" style="padding:8px 0">
       <label class="switch"><input type="checkbox" data-setting="${key}" ${checked ? "checked" : ""}><span class="slider"></span></label>
@@ -479,6 +514,7 @@ function viewConnection() {
       ${secretField("twitch_client_id", "Twitch Client ID", "")}
       ${secretField("twitch_client_secret", "Twitch Client Secret", "")}
     </details>
+    ${viewAccounts()}
     <div class="card section">
       <h3>מי מורשה לדבר עם הבוט</h3>
       <p class="desc" style="margin-bottom:14px">לחיצה ימנית על המשתמש או על הערוץ בדיסקורד, ואז "העתק מזהה". צריך להפעיל קודם מצב מפתחים בהגדרות דיסקורד, תחת מתקדם.</p>
@@ -494,7 +530,7 @@ function viewConnection() {
       ${toggleRow("keep_running_on_close", "להשאיר את הבוט רץ ברקע כשסוגרים את החלון", s.keep_running_on_close)}
     </div>
     <div class="notice">
-      ${t("<b>Privileged Intents:</b> מודולים כמו ברוכים הבאים ואוטומוד צריכים את Server Members Intent ואת Message Content Intent. מפעילים אותם ידנית ב-Developer Portal, בלשונית Bot. האפליקציה לא יכולה להפעיל אותם בשבילך.")}
+      ${t("<b>Privileged Intents:</b> מודולים כמו ברוכים הבאים ואוטומוד צריכים את Server Members Intent ואת Message Content Intent. אפשר להפעיל אותם בלחיצה על 'הפעל אוטומטית' בעמודי המודולים, או ידנית ב-Developer Portal, בלשונית Bot.")}
     </div>`;
 }
 
@@ -571,7 +607,48 @@ function viewProfile() {
       </div>
       <div class="pz-col pz-preview" id="pz-preview">${viewProfilePreview()}</div>
     </div>
-    <div id="profile-msg"></div>`;
+    <div id="profile-msg"></div>
+    ${viewServerProfile()}`;
+}
+
+function viewServerProfile() {
+  if (!S.guild) return "";
+  const sp = S.serverProfile && S.serverProfile.gid === S.guildId ? S.serverProfile : null;
+  const img = (draft, url, fallback) => esc(draft || url || fallback || NONE_IMG);
+  return `
+    <div class="card section">
+      <div class="row"><h3>${esc(t("הפרופיל של הבוט בשרת הזה"))}: <span class="no-translate">${esc(S.guild.name)}</span></h3></div>
+      <p class="desc" style="margin:6px 0 12px">${esc(t("כינוי, תמונה, באנר וביו שרואים רק בשרת הזה. שאר השרתים ממשיכים להראות את הפרופיל הרגיל למעלה. השם והסטטוס של החשבון עצמו משותפים לכל השרתים (מגבלה של דיסקורד)."))}</p>
+      ${!sp ? `<div class="muted small">${esc(t("טוען…"))}</div>` : !sp.account ? `<div class="notice warn">${esc(t("הבוט צריך להיות מחובר ובשרת הזה"))}</div>` : `
+      <div class="personalizer">
+        <div class="pz-col">
+          <div class="field"><span class="label">${esc(t("תמונה בשרת הזה"))}</span>
+            <label class="pz-icon file-btn"><img alt="" src="${img(S.spAvatar, sp.avatar_url, sp.default_avatar)}">
+              <input type="file" id="sp-avatar-file" accept="image/png,image/jpeg,image/gif,image/webp"><span class="pz-edit">✎</span></label>
+            ${sp.avatar_url ? `<button class="btn btn-sm btn-ghost" data-action="sp-reset" data-field="avatar">${esc(t("חזרה לתמונה הרגילה"))}</button>` : ""}</div>
+          <div class="field"><span class="label">${esc(t("באנר בשרת הזה"))}</span>
+            <label class="pz-banner file-btn" style="${S.spBanner || sp.banner_url ? `background-image:url('${img(S.spBanner, sp.banner_url)}')` : ""}">
+              <input type="file" id="sp-banner-file" accept="image/png,image/jpeg,image/gif,image/webp"><span class="pz-edit">✎</span></label>
+            ${sp.banner_url ? `<button class="btn btn-sm btn-ghost" data-action="sp-reset" data-field="banner">${esc(t("חזרה לבאנר הרגיל"))}</button>` : ""}</div>
+        </div>
+        <div class="pz-col grow">
+          <div class="field"><span class="label">${esc(t("כינוי בשרת הזה"))}</span>
+            <input type="text" id="sp-nick" maxlength="32" value="${esc(sp.nick)}" placeholder="${esc(sp.default_name)}">
+            <span class="hint">${esc(t("ריק = השם הרגיל של הבוט"))}</span></div>
+          <div class="field"><span class="label">${esc(t("ביו בשרת הזה"))}</span>
+            <textarea id="sp-bio" maxlength="190" rows="3">${esc(sp.bio)}</textarea></div>
+          <div class="row" style="margin-top:8px"><button class="btn btn-primary" data-action="sp-save">${esc(t("שמור לשרת הזה"))}</button></div>
+        </div>
+      </div>`}
+    </div>`;
+}
+
+async function loadServerProfile() {
+  if (!S.guildId) return;
+  try { S.serverProfile = { ...(await api("GET", `/guilds/${S.guildId}/member-profile`)), gid: S.guildId }; }
+  catch (e) { S.serverProfile = { gid: S.guildId, account: null }; }
+  S.spAvatar = null; S.spBanner = null;
+  if (S.page === "profile") $("#main").innerHTML = viewProfile();
 }
 
 function refreshProfilePreview() { const box = $("#pz-preview"); if (box) box.innerHTML = viewProfilePreview(); }
@@ -650,6 +727,7 @@ function viewPermissions() {
     <div class="card section">
       <h3>קישור הזמנה</h3>
       <div class="row" style="margin-top:10px">
+        ${(S.status.accounts || []).length > 1 ? `<select id="invite-account" class="no-translate" style="width:auto">${S.status.accounts.map((a) => `<option value="${esc(a.id)}">${esc(a.label)}</option>`).join("")}</select>` : ""}
         <select id="invite-guild" class="no-translate" style="width:auto;min-width:220px">${guildOpts}</select>
         <button class="btn btn-primary" data-action="make-invite">צור קישור</button>
       </div>
@@ -1067,6 +1145,7 @@ function viewCategory(catKey) {
       <span>${I18N.lang === "en" ? "" : esc(cat ? cat.en : "") + " · "}${esc(t("שרת:"))} <b class="no-translate">${esc(g.name)}</b></span>
       ${g.objects ? "" : `<span class="badge badge-soon">הבוט כבוי או לא בשרת: בחירה מרשימות לא זמינה</span>`}
       <div class="spacer"></div>
+      ${guildBotSelect(g)}
       ${guildLangSelect()}
       ${g.present === false || !g.objects ? `<button class="btn btn-sm btn-ghost" data-action="forget-guild">הסר פרופיל שרת</button>` : ""}
     </div>
@@ -1087,7 +1166,7 @@ function viewModulePage(key) {
       </div>` : "";
   const soon = m.status === "soon" ? `<div class="card section empty"><h3>המודול הזה עוד לא נבנה</h3><p>אפשר כבר להפעיל את המתג: הבחירה נשמרת, והמודול יעבוד כשייבנה.</p></div>` : "";
   return `
-    <div class="row crumbs"><span><a href="#" data-nav="cat:${m.category}">${esc(cat ? cat.label : "")}</a> › ${esc(m.label)} · ${esc(t("שרת:"))} <b class="no-translate">${esc(g.name)}</b></span><div class="spacer"></div>${guildLangSelect()}</div>
+    <div class="row crumbs"><span><a href="#" data-nav="cat:${m.category}">${esc(cat ? cat.label : "")}</a> › ${esc(m.label)} · ${esc(t("שרת:"))} <b class="no-translate">${esc(g.name)}</b></span><div class="spacer"></div>${guildBotSelect(g)}${guildLangSelect()}</div>
     <div class="card section module-hero">
       <div class="module-head">
         <div class="grow">
@@ -1415,6 +1494,40 @@ const actions = {
   "perm-recommended"() { S.permSel = new Set(S.catalog.recommended_permissions); render(); },
   "perm-none"() { S.permSel = new Set(); render(); },
   "extra-reload"() { loadExtraTable(S.page.slice(4)); },
+  async "sp-save"(btn) {
+    const body = { nick: $("#sp-nick").value, bio: $("#sp-bio").value };
+    if (S.spAvatar) body.avatar = S.spAvatar;
+    if (S.spBanner) body.banner = S.spBanner;
+    await guarded(btn, async () => {
+      await api("PUT", `/guilds/${S.guildId}/member-profile`, body);
+      toast("הפרופיל בשרת הזה עודכן", "ok");
+      await loadServerProfile();
+    });
+  },
+  async "sp-reset"(btn) {
+    await guarded(btn, async () => {
+      await api("PUT", `/guilds/${S.guildId}/member-profile`, { reset: [btn.dataset.field] });
+      await loadServerProfile();
+    });
+  },
+  async "account-add"(btn) {
+    const token = $("#acc-token").value.trim();
+    if (!token) { toast("השדה ריק", "error"); return; }
+    await guarded(btn, async () => {
+      await api("POST", "/accounts", { label: $("#acc-label").value.trim(), token });
+      S.status = await api("GET", "/status");
+      render();
+      toast("הבוט נוסף", "ok");
+    });
+  },
+  async "account-remove"(btn) {
+    if (!(await confirmDialog(t("להסיר את {name}?", { name: btn.dataset.label }), "הבוט הזה ינותק והטוקן שלו יימחק מהאפליקציה. השרתים שהוא הפעיל יחזרו לבוט הראשי (אם הוא נמצא בהם). הנתונים של השרתים לא נמחקים.", "הסר"))) return;
+    await guarded(btn, async () => {
+      await api("DELETE", "/accounts/" + btn.dataset.id);
+      S.status = await api("GET", "/status");
+      render();
+    });
+  },
   "social-reload"() { loadSocialStatus(); },
   async "social-test"(btn) {
     if (S.dirty) { toast("שמור קודם את השינויים", "error"); return; }
@@ -1455,7 +1568,7 @@ const actions = {
   },
   async "make-invite"(btn) {
     await guarded(btn, async () => {
-      S.invite = await api("POST", "/invite", { permissions: [...S.permSel], guild_id: $("#invite-guild").value });
+      S.invite = await api("POST", "/invite", { permissions: [...S.permSel], guild_id: $("#invite-guild").value, account: ($("#invite-account") || {}).value || "" });
       render();
     });
   },
@@ -1969,6 +2082,23 @@ document.addEventListener("change", async (e) => {
       S.guild = await api("PUT", `/guilds/${S.guildId}/language`, { language: t.value });
       toast(window.t("שפת הבוט עודכנה"), "ok");
       if (!S.dirty) render();
+    } catch (err) { toast(errMessage(err), "error"); }
+    return;
+  }
+  if (t.id === "sp-avatar-file" || t.id === "sp-banner-file") {
+    const file = t.files[0];
+    if (!file) return;
+    if (file.size > 8 * 1024 * 1024) { toast("התמונה גדולה מדי (עד 8MB)", "error"); t.value = ""; return; }
+    const reader = new FileReader();
+    reader.onload = () => { if (t.id === "sp-banner-file") S.spBanner = reader.result; else S.spAvatar = reader.result; $("#main").innerHTML = viewProfile(); };
+    reader.readAsDataURL(file);
+    return;
+  }
+  if (t.id === "guild-bot") {
+    try {
+      S.guild = await api("PUT", `/guilds/${S.guildId}/bot`, { account: t.value });
+      toast("נשמר", "ok");
+      render();
     } catch (err) { toast(errMessage(err), "error"); }
     return;
   }

@@ -17,7 +17,7 @@ import uvicorn
 
 from . import paths, secrets_store
 from .api import create_app
-from .bot import BotManager
+from .bot import BotFleet
 from .bus import BusLogHandler, bus
 from .redact import RedactingFormatter
 from .store import Store
@@ -83,7 +83,7 @@ def main() -> int:
     store = Store(paths.db_file())
     from .i18n import set_ui_lang
     set_ui_lang(store.get_settings()["ui_lang"])
-    manager = BotManager(store)
+    manager = BotFleet(store)
 
     server: uvicorn.Server | None = None
 

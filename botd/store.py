@@ -255,7 +255,18 @@ class Store(FeatureStoreMixin):
         return Lang(self.guild_lang(gid), custom["texts"], custom["colors"], custom["emojis"])
 
     def set_guild_lang(self, gid: str, lang: str) -> dict:
-        return self.set_config(gid, "_server", {"language": lang})
+        server = dict(((self.get_guild(gid) or {}).get("config", {}).get("_server") or {}))
+        server["language"] = lang
+        return self.set_config(gid, "_server", server)
+
+    def guild_bot(self, gid: str) -> str:
+        """The bot account chosen to run this server ("" = automatic)."""
+        return (((self.get_guild(gid) or {}).get("config", {}).get("_server") or {}).get("bot") or "")
+
+    def set_guild_bot(self, gid: str, account_id: str) -> dict:
+        server = dict(((self.get_guild(gid) or {}).get("config", {}).get("_server") or {}))
+        server["bot"] = account_id
+        return self.set_config(gid, "_server", server)
 
     def delete_guild(self, gid: str) -> None:
         with self._lock, self._db:

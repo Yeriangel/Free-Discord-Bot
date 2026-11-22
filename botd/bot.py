@@ -45,6 +45,8 @@ class ManagedBot(commands.Bot):
         if guild is None:
             return None
         gid = str(guild.id)
+        if not self.manager.owns(gid):  # another of your bots runs this server
+            return None
         if not self.store.module_enabled(gid, key):
             return None
         lang = self.store.guild_lang_obj(gid)
@@ -185,8 +187,10 @@ async def command_specs(store: Store) -> list[dict]:
 
 
 class BotManager:
-    def __init__(self, store: Store):
+    def __init__(self, store: Store, account_id: str = "main", token_name: str = "bot_token", label: str = ""):
         self.store = store
+        self.account_id, self.token_name, self.label = account_id, token_name, label
+        self.fleet: "BotFleet | None" = None
         self.bot: ManagedBot | None = None
         self.task: asyncio.Task | None = None
         self.state = "stopped"  # stopped | connecting | connected | reconnecting | stopping | error
@@ -197,6 +201,12 @@ class BotManager:
         self._lock = asyncio.Lock()
 
     # ---- status ----------------------------------------------------------
+    def owns(self, gid: str) -> bool:
+        """True if this account runs that server (always true when it is the only bot)."""
+        if self.fleet is None or not self.fleet.extras:
+            return True
+        return self.fleet.owner_of(gid) is self
+
     def status(self) -> dict:
         bot = self.bot
         user = None
@@ -221,7 +231,8 @@ class BotManager:
         }
 
     def _publish_status(self) -> None:
-        bus.publish({"type": "status", "status": self.status()})
+        status = self.fleet.status() if self.fleet is not None else self.status()
+        bus.publish({"type": "status", "status": status})
 
     def _set_state(self, state: str, error: str = "") -> None:
         self.state = state
@@ -310,7 +321,7 @@ class BotManager:
         async with self._lock:
             if self.task is not None and not self.task.done():
                 return
-            token = secrets_store.get("bot_token")
+            token = secrets_store.get(self.token_name)
             if not token:
                 raise ValueError(tr("לא הוגדר Bot Token. הוסף אותו בעמוד 'חיבור והגדרות'."))
             self.started_at = time.time()
@@ -345,7 +356,7 @@ class BotManager:
 
     async def enable_intents(self) -> dict:
         """Turns the privileged intents on in the Developer Portal (via the API) and reconnects the bot."""
-        token = secrets_store.get("bot_token")
+        token = secrets_store.get(self.token_name)
         if not token:
             raise ValueError(tr("לא הוגדר Bot Token. הוסף אותו בעמוד 'חיבור והגדרות'."))
         found = await discord_rest.enable_intents(token)
@@ -373,3 +384,134 @@ class BotManager:
                 await asyncio.wait_for(asyncio.shield(task), timeout=10)
             except asyncio.TimeoutError:
                 task.cancel()
+
+
+# ---------------------------------------------------------------------------------------------------
+# Several bot accounts at once. The main account uses "bot_token"; extra accounts have their own token.
+# Each server is run by one account: the one chosen for it in the app, or else the main bot when it is
+# there, so two of your bots in the same server never answer twice.
+# ---------------------------------------------------------------------------------------------------
+ACCOUNTS_KEY = "bot_accounts"
+
+
+class BotFleet:
+    def __init__(self, store: Store):
+        self.store = store
+        self.main = BotManager(store)
+        self.main.fleet = self
+        self.extras: dict[str, BotManager] = {}
+        for acc in store.get_kv(ACCOUNTS_KEY, []) or []:
+            self._add_manager(acc["id"], acc.get("label", ""))
+
+    # ---- accounts ----------------------------------------------------------------------------
+    def _add_manager(self, account_id: str, label: str) -> BotManager:
+        m = BotManager(self.store, account_id, f"bot_token_{account_id}", label)
+        m.fleet = self
+        self.extras[account_id] = m
+        return m
+
+    def managers(self) -> list[BotManager]:
+        return [self.main, *self.extras.values()]
+
+    def get(self, account_id: str) -> BotManager | None:
+        return self.main if account_id in ("", "main") else self.extras.get(account_id)
+
+    def add_account(self, label: str) -> BotManager:
+        import secrets as _secrets
+
+        account_id = _secrets.token_hex(3)
+        accounts = self.store.get_kv(ACCOUNTS_KEY, []) or []
+        accounts.append({"id": account_id, "label": label[:40]})
+        self.store.set_kv(ACCOUNTS_KEY, accounts)
+        return self._add_manager(account_id, label[:40])
+
+    async def remove_account(self, account_id: str) -> None:
+        m = self.extras.pop(account_id, None)
+        if m is not None:
+            await m.stop()
+            secrets_store.delete(m.token_name)
+        self.store.set_kv(ACCOUNTS_KEY, [a for a in self.store.get_kv(ACCOUNTS_KEY, []) or [] if a["id"] != account_id])
+
+    def accounts_status(self) -> list[dict]:
+        out = []
+        for m in self.managers():
+            st = m.status()
+            out.append({"id": m.account_id, "label": m.label or ("Main bot" if m.account_id == "main" else m.account_id),
+                        "main": m.account_id == "main", "has_token": bool(secrets_store.get(m.token_name)),
+                        "state": st["state"], "user": st["user"], "guild_count": st["guild_count"], "error": st["error"]})
+        return out
+
+    # ---- which account runs a server ------------------------------------------------------------
+    def owner_of(self, gid: str) -> BotManager | None:
+        present = [m for m in self.managers()
+                   if m.bot is not None and m.state == "connected" and m.bot.get_guild(int(gid)) is not None]
+        chosen = self.get(self.store.guild_bot(gid))
+        if chosen is not None and chosen in present:
+            return chosen
+        if self.main in present:
+            return self.main
+        return present[0] if present else None
+
+    def bot_for(self, gid: str):
+        owner = self.owner_of(gid)
+        return owner.bot if owner is not None else None
+
+    # ---- the BotManager interface the API uses (main bot + all accounts together) -----------------
+    def __getattr__(self, name):  # bot, state, task, error, intents, app_id, ... come from the main bot
+        return getattr(self.main, name)
+
+    def status(self) -> dict:
+        st = self.main.status()
+        st["accounts"] = self.accounts_status() if self.extras else []
+        return st
+
+    async def start(self) -> None:
+        await self.main.start()
+        for m in self.extras.values():
+            if secrets_store.get(m.token_name):
+                try:
+                    await m.start()
+                except ValueError as exc:
+                    log.warning("%s: %s", m.label or m.account_id, exc)
+
+    async def stop(self) -> None:
+        for m in self.managers():
+            await m.stop()
+
+    async def enable_intents(self) -> dict:
+        found = await self.main.enable_intents()
+        for m in self.extras.values():
+            if secrets_store.get(m.token_name):
+                try:
+                    await m.enable_intents()
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("%s: %s", m.label or m.account_id, exc)
+        return found
+
+    async def apply_presence(self) -> None:
+        for m in self.managers():
+            await m.apply_presence()
+
+    def live_guild_ids(self) -> set[str]:
+        out: set[str] = set()
+        for m in self.managers():
+            out |= m.live_guild_ids()
+        return out
+
+    def live_guild(self, gid: str) -> discord.Guild | None:
+        owner = self.owner_of(gid) if gid.isdigit() else None
+        return owner.live_guild(gid) if owner is not None else None
+
+    def guild_objects(self, gid: str) -> dict | None:
+        owner = self.owner_of(gid) if gid.isdigit() else None
+        if owner is None:
+            return None
+        objects = owner.guild_objects(gid)
+        if objects is not None:
+            objects["bot_account"] = owner.account_id
+            objects["bots_present"] = [m.account_id for m in self.managers()
+                                       if m.bot is not None and m.state == "connected" and m.bot.get_guild(int(gid))]
+        return objects
+
+    def all_bots(self) -> list:
+        return [m.bot for m in self.managers() if m.bot is not None and m.state == "connected"]

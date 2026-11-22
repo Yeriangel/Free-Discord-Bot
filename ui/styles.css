@@ -304,3 +304,6 @@ body.compact .card.section { padding: 12px; }
 body.compact .nav-item { padding: 6px 10px; }
 body.compact .grid { gap: 10px; }
 body.theme-light .nav-item.active { color: var(--text); }
+
+.acc-row { padding: 8px 0; border-bottom: 1px solid var(--border); }
+span.chat-avatar { display: inline-block; background: var(--panel-2); }

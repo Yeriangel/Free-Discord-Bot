@@ -98,6 +98,8 @@ class Giveaways(commands.Cog):
     @tasks.loop(seconds=15)
     async def loop(self) -> None:
         for gw in self.bot.store.due_giveaways(time.time()):
+            if self.bot.get_guild(int(gw["guild_id"])) is None or not self.bot.manager.owns(gw["guild_id"]):
+                continue
             try:
                 await self.finish(gw)
             except Exception:  # noqa: BLE001

@@ -43,6 +43,7 @@ You can also just **reply** to the bot instead of mentioning it every time.
 | Social Alerts | YouTube, Twitch, Reddit and any RSS feed (TikTok and X have no free API, so they are not supported) |
 | Games & Fun | Economy (currency, `/daily` streaks, dice, guess, roulette, rock-paper-scissors, shop, boosts), Giveaways, Birthdays |
 | AI | Chat with **Claude** (Haiku / Sonnet / Opus), **ChatGPT** (GPT-6 Luna / Terra / Sol / Astra) or **Grok** (4.3 / 4.7), all with the same powers: server actions with confirmation, saves birthdays / reminders / giveaways / polls you mention (after you confirm) |
+| Multi-server | Each server keeps its own settings and stats. The bot can have a **different nickname, picture, banner and bio in each server**, and you can run **several bot accounts** (each with its own token) from one app and choose which bot runs each server |
 | App | Bot Personalizer (avatar, banner, status, activity), **Console** (typed commands + talk as the bot), **Customize everything** (every bot message, embed colors and emojis per server, slash command names, app theme and custom CSS), per-server profiles, invite link builder with minimal permissions, live logs, Ctrl+K search, online updates with rollback |
 
 Tell the bot "John's birthday is on 24/12" and it offers to add it to Birthdays; it saves it only after you click

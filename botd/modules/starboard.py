@@ -23,7 +23,7 @@ class Activity(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
-        if message.guild is None or message.author.bot:
+        if message.guild is None or message.author.bot or not self.bot.manager.owns(str(message.guild.id)):
             return
         self.bot.store.count_message(str(message.guild.id), str(message.author.id), message.author.display_name)
 
