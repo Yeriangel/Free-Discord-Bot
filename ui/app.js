@@ -1139,7 +1139,11 @@ function moduleExtras(key) {
     <button class="btn btn-primary" data-action="embed-send">${esc(t("שלח לדיסקורד"))}</button></div>`;
   if (key === "ticketing") out += `<div class="card section row"><span class="grow muted">${esc(t("אחרי השמירה, פרסם את ההודעה עם הכפתור בערוץ שבחרת."))}</span>
     <button class="btn btn-primary" data-action="ticket-panel">${esc(t("פרסם כפתור"))}</button></div>`;
-  if (key === "social_alerts") out += `<div class="notice">${esc(t("TikTok ו-X (טוויטר) לא נתמכים: אין להם API או פיד חינמי. בפעם הראשונה הבוט רק זוכר מה כבר קיים, ומתריע רק על תוכן חדש."))}</div>`;
+  if (key === "social_alerts") out += `<div class="notice">${esc(t("TikTok ו-X (טוויטר) לא נתמכים: אין להם API או פיד חינמי. בפעם הראשונה הבוט רק זוכר מה כבר קיים, ומתריע רק על תוכן חדש."))}</div>
+    <div class="card section"><div class="row"><h3>${esc(t("בדיקת המקורות"))}</h3><div class="spacer"></div>
+      <button class="btn btn-sm" data-action="social-reload">${esc(t("רענן"))}</button></div>
+      <p class="desc">${esc(t("שמור קודם. 'בדוק' מראה מה המקור מחזיר עכשיו, ו'שלח בדיקה' שולח התראה לדוגמה לערוץ."))}</p>
+      <div id="social-status" class="muted small" style="margin-top:10px">${esc(t("טוען…"))}</div></div>`;
   if (key === "birthdays") out += `<div class="card section"><h3>${esc(t("הוספת יום הולדת"))}</h3>
     <div class="row" style="margin-top:10px;flex-wrap:wrap">
       <input type="text" id="bday-name" placeholder="${esc(t("שם או מזהה משתמש"))}" style="max-width:240px">
@@ -1161,8 +1165,24 @@ async function loadExtraTable(key) {
   box.innerHTML = `<table class="table"><thead><tr>${tbl.head.map((h) => `<th>${esc(t(h))}</th>`).join("")}</tr></thead><tbody>${rows.map(tbl.row).join("")}</tbody></table>`;
 }
 
+async function loadSocialStatus() {
+  const box = $("#social-status");
+  if (!box || !S.guildId) return;
+  let rows;
+  try { rows = await api("GET", `/guilds/${S.guildId}/social/status`); } catch (e) { box.textContent = errMessage(e); return; }
+  if (!rows.length) { box.textContent = t("עוד אין מקורות שמורים. הוסף שורה למעלה ושמור."); return; }
+  box.classList.remove("muted", "small");
+  box.innerHTML = `<table class="table"><thead><tr><th>${esc(t("רשת"))}</th><th>${esc(t("מקור"))}</th><th>${esc(t("בדיקה אחרונה"))}</th><th></th></tr></thead><tbody>
+    ${rows.map((r) => `<tr><td>${esc(r.kind)}</td><td class="no-translate ltr">${esc(r.source)}</td>
+      <td>${r.at ? `<span class="badge ${r.ok ? "badge-ok" : "badge-danger"}">${r.ok ? "✓" : "✕"}</span> <span class="small">${esc(r.msg || "")}</span><div class="muted small">${fmtDate(r.at)}</div>` : `<span class="muted small">${esc(t("עוד לא נבדק"))}</span>`}</td>
+      <td style="white-space:nowrap"><button class="btn btn-sm" data-action="social-test" data-idx="${r.index}">${esc(t("בדוק"))}</button>
+        <button class="btn btn-sm btn-ghost" data-action="social-send" data-idx="${r.index}">${esc(t("שלח בדיקה"))}</button></td></tr>`).join("")}
+    </tbody></table>`;
+}
+
 function afterModuleRender(key) {
   loadExtraTable(key);
+  if (key === "social_alerts") loadSocialStatus();
   if (key === "levels") loadLeaderboard();
   if (key === "economy") loadRichList();
   if (key === "warnings") loadWarnings();
@@ -1395,6 +1415,15 @@ const actions = {
   "perm-recommended"() { S.permSel = new Set(S.catalog.recommended_permissions); render(); },
   "perm-none"() { S.permSel = new Set(); render(); },
   "extra-reload"() { loadExtraTable(S.page.slice(4)); },
+  "social-reload"() { loadSocialStatus(); },
+  async "social-test"(btn) {
+    if (S.dirty) { toast("שמור קודם את השינויים", "error"); return; }
+    await guarded(btn, async () => toast((await api("POST", `/guilds/${S.guildId}/social/test/${btn.dataset.idx}`)).message, "ok"));
+  },
+  async "social-send"(btn) {
+    if (S.dirty) { toast("שמור קודם את השינויים", "error"); return; }
+    await guarded(btn, async () => { await api("POST", `/guilds/${S.guildId}/social/test/${btn.dataset.idx}?send=true`); toast("התראת בדיקה נשלחה", "ok"); });
+  },
   async "embed-send"(btn) {
     if (S.dirty) { toast("שמור קודם את השינויים", "error"); return; }
     await guarded(btn, async () => { await api("POST", `/guilds/${S.guildId}/embed/send`); toast("ההודעה נשלחה", "ok"); });
@@ -1548,7 +1577,8 @@ const actions = {
   async "install-version"(btn) {
     const newer = btn.dataset.newer === "1";
     const ok = await confirmDialog(newer ? t("לעדכן לגרסה {tag}?", { tag: btn.dataset.tag }) : t("לחזור לגרסה {tag}?", { tag: btn.dataset.tag }),
-      "הקבצים של האפליקציה יוחלפו בגרסה שבחרת. ההגדרות, הסודות והנתונים שלך לא משתנים, וגיבוי של הגרסה הנוכחית נשמר. אחרי ההתקנה צריך לסגור את האפליקציה ולפתוח אותה מחדש.",
+      newer ? "הקבצים של האפליקציה יוחלפו בגרסה שבחרת. ההגדרות, הסודות והנתונים שלך לא משתנים, וגיבוי של הגרסה הנוכחית נשמר. אחרי ההתקנה צריך לסגור את האפליקציה ולפתוח אותה מחדש."
+        : "⚠️ גרסאות ישנות עובדות פחות טוב: יש בהן באגים שתוקנו מאז, חסרים בהן תיקוני אבטחה ויציבות, והבוט עלול להתנהג בשרת שלך בצורה לא צפויה. בגרסאות 1.0.0 עד 1.0.2 גם העדכון מתוך האפליקציה לא עובד, ותצטרך להוריד גרסה חדשה ידנית. מומלץ להישאר בגרסה האחרונה.\nההגדרות והנתונים שלך לא משתנים, וגיבוי של הגרסה הנוכחית נשמר.",
       newer ? "עדכן" : "חזור לגרסה", !newer);
     if (!ok) return;
     await guarded(btn, async () => {

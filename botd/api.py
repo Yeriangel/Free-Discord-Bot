@@ -629,6 +629,33 @@ def create_app(
             raise err(400, tr("דיסקורד דחה את ההודעה: {error}", error=exc.text or exc.status))
         return {"ok": True, "url": msg.jump_url}
 
+    @app.get("/api/guilds/{gid}/social/status")
+    async def social_status(gid: str):
+        _guild_or_404(gid)
+        cfg = catalog.merged_config("social_alerts", store.raw_config(gid, "social_alerts"))
+        out = []
+        for i, feed in enumerate(cfg["feeds"]):
+            st = store.get_kv(f"feed_status:{gid}:{feed['kind']}:{feed['source'].strip().lower()}") or {}
+            out.append({"index": i, "kind": feed["kind"], "source": feed["source"], "channel_id": feed["channel_id"], **st})
+        return out
+
+    @app.post("/api/guilds/{gid}/social/test/{index}")
+    async def social_test(gid: str, index: int, send: bool = False):
+        guild = _live(gid)
+        cfg = catalog.merged_config("social_alerts", store.raw_config(gid, "social_alerts"))
+        if not 0 <= index < len(cfg["feeds"]):
+            raise err(404, tr("לא נמצא"))
+        cog = manager.bot.get_cog("SocialAlerts") if manager.bot else None
+        try:
+            text = await cog.preview(guild, cfg["feeds"][index], send=send)
+        except ValueError as exc:
+            raise err(400, str(exc))
+        except discord.HTTPException as exc:
+            raise err(400, tr("דיסקורד דחה את ההודעה: {error}", error=exc.text or exc.status))
+        except Exception as exc:  # noqa: BLE001 - network problems with the source site
+            raise err(502, tr("המקור לא ענה: {error}", error=f"{type(exc).__name__}: {exc}"[:200]))
+        return {"message": text}
+
     class BirthdayIn(BaseModel):
         name: str = ""
         user_id: str = ""

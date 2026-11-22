@@ -70,6 +70,16 @@ The app's **Updates** page checks this repository's Releases. The newest version
 and every older version can be installed again ("go back"). A backup of your current version is kept,
 and your settings and data are not touched.
 
+> [!WARNING]
+> **Always use the newest version.** Every release fixes bugs and adds safety checks, so the bot works better and
+> more safely in newer versions. Going back to an older version, or trying the first releases, can put your server
+> at risk: those versions have bugs that were fixed later and may make the bot behave in unexpected ways in your
+> server. For example:
+> - In 1.0.0–1.0.2 the in-app update cannot download new versions (you have to download the newest one by hand).
+> - Before 1.0.2, personal reminders could crash, and the missing-intents problem could only be fixed by hand.
+>
+> If you go back anyway, do it at your own risk, and update again as soon as you can.
+
 Maintainers publish a version with `python tools/release.py 1.0.1 "what changed"`. Older release zips are moved
 into the `OldVersions` folder.
 

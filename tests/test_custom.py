@@ -241,6 +241,68 @@ def test_openai_and_grok():
     print("ok ChatGPT and Grok: same tools, read-tool loop, keys, models, cost tracking")
 
 
+def test_twitch_alerts():
+    from botd import catalog
+    from botd.modules.social_alerts import SocialAlerts, decapi_live, twitch_login
+
+    assert twitch_login("https://www.twitch.tv/Some_Streamer?ref=x") == "some_streamer" and twitch_login("@Name") == "name"
+    assert decapi_live("1 hour, 5 minutes, 2 seconds") and not decapi_live("someone is offline") and not decapi_live("")
+    # a half-filled row (source without a channel) is an error now, an empty row is still ignored
+    try:
+        catalog.validate_config("social_alerts", {"feeds": [{"kind": "twitch", "source": "name", "channel_id": ""}]})
+        raise AssertionError("half-filled row accepted")
+    except ValueError as exc:
+        assert "row 1" in str(exc) or "בשורה 1" in str(exc), exc
+    assert catalog.validate_config("social_alerts", {"feeds": [{"kind": "twitch", "source": "", "channel_id": ""}]})["feeds"] == []
+
+    store, bot = make_env()
+    chan = MagicMock()
+    chan.send = AsyncMock()
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = int(GID)
+    guild.get_channel = lambda cid: chan
+    feed = {"kind": "twitch", "source": "https://twitch.tv/streamer1", "channel_id": "333333333333333333",
+            "message": "📣 {name}: {title}\n{url}", "role_id": ""}
+    states = iter([
+        {"live": True, "stream_id": "", "title": "old stream", "game": "", "name": "streamer1", "url": "https://twitch.tv/streamer1", "thumb": "", "via": "decapi"},
+        {"live": False, "stream_id": "", "title": "", "game": "", "name": "streamer1", "url": "https://twitch.tv/streamer1", "thumb": "", "via": "decapi"},
+        {"live": True, "stream_id": "", "title": "Ranked games", "game": "Valorant", "name": "streamer1", "url": "https://twitch.tv/streamer1",
+         "thumb": "https://static-cdn.jtvnw.net/previews-ttv/live_user_streamer1-640x360.jpg", "via": "decapi"},
+        {"live": True, "stream_id": "", "title": "Ranked games", "game": "Valorant", "name": "streamer1", "url": "https://twitch.tv/streamer1", "thumb": "", "via": "decapi"},
+    ])
+
+    async def go():
+        cog = SocialAlerts(bot)
+        cog.loop.cancel()
+
+        async def fake_status(client, login):
+            assert login == "streamer1"
+            return next(states)
+        cog.twitch_status = fake_status
+        await cog.check(None, guild, feed)   # already live when added: no alert for an old stream
+        await cog.check(None, guild, feed)   # offline
+        assert chan.send.await_count == 0
+        await cog.check(None, guild, feed)   # goes live -> one alert with an embed
+        assert chan.send.await_count == 1
+        sent = chan.send.await_args
+        assert "Ranked games" in sent.args[0] and sent.kwargs["embed"].fields[0].value == "Valorant"
+        assert sent.kwargs["embed"].image.url.startswith("https://static-cdn.jtvnw.net/previews-ttv/live_user_streamer1")
+        await cog.check(None, guild, feed)   # still the same stream: no second alert
+        assert chan.send.await_count == 1
+        status = store.get_kv(f"feed_status:{GID}:twitch:{feed['source'].lower()}")
+        assert status["ok"] and "Ranked games" in status["msg"]
+
+        async def offline(client, login):
+            return {"live": False, "stream_id": "", "title": "", "game": "", "name": login, "url": "u", "thumb": "", "via": "decapi"}
+        cog.twitch_status = offline
+        assert "decapi.me" in await cog.preview(guild, feed)
+        await cog.preview(guild, feed, send=True)   # test alert even while offline
+        assert chan.send.await_args.args[0].startswith("🧪 ")
+    asyncio.run(go())
+    store.close()
+    print("ok twitch: keyless live detection, one alert per stream, embed with game and preview, test button")
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

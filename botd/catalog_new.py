@@ -108,12 +108,13 @@ NEW_MODULES = {m["key"]: m for m in [
             _f("kind", "select", "רשת", "youtube", options=[
                 ["youtube", "YouTube"], ["twitch", "Twitch"], ["reddit", "Reddit"], ["rss", "RSS / אתר"]]),
             _f("source", "text", "ערוץ / משתמש / קישור", "", required=True, max=300,
-               hint="YouTube: קישור לערוץ או ‎@handle · Twitch: שם משתמש · Reddit: שם הסאב · RSS: קישור לפיד"),
+               hint="YouTube: קישור לערוץ או ‎@handle · Twitch: שם משתמש או קישור לערוץ · Reddit: שם הסאב · RSS: קישור לפיד"),
             _f("channel_id", "channel", "ערוץ ההתראות", "", required=True),
             _f("message", "text", "הודעה", "📣 {name}: {title}\n{url}", max=500, hint="{name} · {title} · {url}"),
             _f("role_id", "role", "תפקיד לתייג (לא חובה)", ""),
         ]),
-        _f("check_minutes", "number", "לבדוק כל כמה דקות", 10, min=5, max=120),
+        _f("check_minutes", "number", "לבדוק כל כמה דקות", 5, min=2, max=120,
+           hint="Twitch עובד גם בלי מפתחות. עם Client ID ו-Secret משלך (בעמוד 'חיבור והגדרות') הוא מהיר ואמין יותר ומראה גם צופים."),
     ], commands=[]),
 
     _m("giveaways", "games", "הגרלות", "הגרלות עם כפתור השתתפות וזוכה אקראי", [

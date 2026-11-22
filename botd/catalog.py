@@ -178,8 +178,14 @@ def _validate_field(field: dict, value):
         for item in items:
             if not isinstance(item, dict):
                 continue
-            if any(f.get("required") and not str(item.get(f["key"], "")).strip() for f in field["item_fields"]):
-                continue  # incomplete row
+            missing = [f for f in field["item_fields"] if f.get("required") and not str(item.get(f["key"], "")).strip()]
+            if missing:
+                filled = any(str(item.get(f["key"], "")).strip() for f in field["item_fields"]
+                             if f["type"] not in ("select", "bool", "number"))
+                if not filled:
+                    continue  # an empty row is just ignored
+                raise ValueError(tr("{label}: בשורה {n} חסר '{field}'", label=label, n=len(out) + 1,
+                                    field=tr(missing[0]["label"])))
             out.append({f["key"]: _validate_field({**f, "_label": f"{label}: {tr(f['label'])}"}, item.get(f["key"], f["default"]))
                         for f in field["item_fields"]})
         if field.get("unique"):
