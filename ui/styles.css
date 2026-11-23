@@ -367,3 +367,14 @@ span.chat-avatar { display: inline-block; background: var(--panel-2); }
   animation: live-update-slide 1.2s ease-in-out infinite; }
 @keyframes live-update-slide { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
 [dir="rtl"] .live-update-bar span { animation-direction: reverse; }
+
+.pv-bio { margin-top: 10px; background: rgba(0, 0, 0, .25); border-radius: 8px; padding: 8px 10px; }
+.pv-bio-text { white-space: pre-wrap; font-size: 13px; margin-top: 2px; }
+
+.crop-card { width: min(540px, 94vw); }
+.crop-canvas { display: block; width: 100%; height: auto; border-radius: 8px; margin-top: 12px; cursor: grab; touch-action: none; background: #0b0d12; }
+.crop-canvas:active { cursor: grabbing; }
+.crop-tools { display: flex; align-items: center; gap: 10px; margin: 12px 0 6px; }
+.crop-tools .crop-zoom { width: 180px; }
+.crop-ico { opacity: .7; }
+.crop-ico.small { font-size: 11px; }

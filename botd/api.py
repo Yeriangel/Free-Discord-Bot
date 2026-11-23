@@ -44,6 +44,7 @@ class SettingsIn(BaseModel):
 
 
 class ProfileIn(BaseModel):
+    bio: str | None = None
     username: str | None = None
     avatar: str | None = None  # data: URI
     banner: str | None = None  # data: URI
@@ -476,12 +477,17 @@ def create_app(
             me = await discord_rest.get_me(_require_token())
         except discord_rest.DiscordAPIError as exc:
             raise _discord_error(exc)
-        return _profile_view(me)
+        return await _profile_view(me)
 
-    def _profile_view(me: dict) -> dict:
+    async def _profile_view(me: dict, bio: str | None = None) -> dict:
+        if bio is None:
+            try:
+                bio = (await discord_rest.get_application(_require_token())).get("description") or ""
+            except discord_rest.DiscordAPIError:
+                bio = ""
         return {"id": me["id"], "username": me.get("username", ""), "discriminator": me.get("discriminator", "0"),
                 "avatar_url": discord_rest.avatar_url(me), "banner_url": discord_rest.banner_url(me),
-                "presence": store.get_settings()["presence"]}
+                "presence": store.get_settings()["presence"], "bio": bio}
 
     @app.put("/api/presence")
     async def put_presence(body: PresenceIn):
@@ -495,14 +501,21 @@ def create_app(
 
     @app.patch("/api/profile")
     async def patch_profile(body: ProfileIn):
+        bio = None
         try:
-            me = await discord_rest.update_me(_require_token(), body.username, body.avatar, body.banner)
+            if body.bio is not None:
+                bio = await discord_rest.update_bio(_require_token(), body.bio)
+            if body.username or body.avatar or body.banner:
+                me = await discord_rest.update_me(_require_token(), body.username, body.avatar, body.banner)
+            else:
+                me = await discord_rest.get_me(_require_token())
         except ValueError as exc:
             raise err(400, str(exc))
         except discord_rest.DiscordAPIError as exc:
             raise _discord_error(exc)
-        log.info(tr("פרופיל הבוט עודכן (%s)"), ", ".join(k for k in ("username", "avatar", "banner") if getattr(body, k)))
-        return _profile_view(me)
+        changed = [k for k in ("username", "avatar", "banner") if getattr(body, k)] + (["bio"] if body.bio is not None else [])
+        log.info(tr("פרופיל הבוט עודכן (%s)"), ", ".join(changed))
+        return await _profile_view(me, bio)
 
     # ---- catalog, permissions, invite -----------------------------------
     @app.get("/api/i18n")
@@ -1001,27 +1014,36 @@ def create_app(
             p = persona.validate(body.persona)
         except ValueError as exc:
             raise err(400, str(exc))
+        store.set_config(gid, "_persona", p)  # saved first: a refused profile change never loses the character
+        chat = _cog(gid, "ClaudeChat")
+        live = manager.live_guild(gid) if hasattr(manager, "live_guild") else None
+        if chat is not None and live is not None:  # forget the recent chat, so the new personality starts fresh
+            for channel_id in [c.id for c in live.channels] + [t.id for t in getattr(live, "threads", [])]:
+                chat.history.pop(channel_id, None)
+        log.info(tr("הדמות של הבוט בשרת %s נשמרה (%s)"), guild["name"], p["name"] or "-")
+        warning = ""
         if body.apply_profile and p["name"]:  # the character's name (and picture) become the bot's profile in this server
             owner = manager.owner_of(gid) if hasattr(manager, "owner_of") else None
-            if owner is None:
-                raise err(409, tr("הבוט צריך להיות מחובר ובשרת הזה"))
             try:
+                if owner is None:
+                    raise ValueError(tr("הבוט צריך להיות מחובר ובשרת הזה"))
                 member = await discord_rest.update_member_profile(secrets_store.get(owner.token_name), gid,
                                                                   nick=p["name"][:32], avatar=body.avatar or None)
+                uid = str((member.get("user") or {}).get("id") or "")
+                url = discord_rest.member_asset_url(gid, uid, member, "avatar")
+                if url:
+                    p["avatar_url"] = url
+                    store.set_config(gid, "_persona", p)
+                profile = dict(guild["config"].get("_profile") or {})
+                profile.update({"nick": member.get("nick") or "", **({"avatar_url": url} if url else {})})
+                store.set_config(gid, "_profile", profile)
             except ValueError as exc:
-                raise err(400, str(exc))
+                warning = str(exc)
             except discord_rest.DiscordAPIError as exc:
-                raise _discord_error(exc)
-            uid = str((member.get("user") or {}).get("id") or "")
-            url = discord_rest.member_asset_url(gid, uid, member, "avatar")
-            if url:
-                p["avatar_url"] = url
-            profile = dict(guild["config"].get("_profile") or {})
-            profile.update({"nick": member.get("nick") or "", **({"avatar_url": url} if url else {})})
-            store.set_config(gid, "_profile", profile)
-        store.set_config(gid, "_persona", p)
-        log.info(tr("הדמות של הבוט בשרת %s נשמרה (%s)"), guild["name"], p["name"] or "-")
-        return {"persona": p}
+                warning = tr("הדמות נשמרה, אבל דיסקורד לא החליף את השם או התמונה של הבוט: {error}", error=exc.message)
+            if warning:
+                log.warning("%s", warning)
+        return {"persona": p, "warning": warning}
 
     @app.post("/api/guilds/{gid}/persona/generate")
     async def generate_persona(gid: str, body: PersonaGenIn):

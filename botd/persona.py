@@ -49,7 +49,7 @@ DEFAULT = {"enabled": False, "name": "", "description": "", "category": "origina
            "traits": [], "loves": [], "hates": [], "facts": [], "length": 1, "demeanor": 2, "vulgarity": 1, "content": 1,
            "avatar_url": ""}
 LIMITS = {"name": 80, "description": 200, "universe": 80, "bio": 2000}
-LIST_LIMITS = {"traits": 15, "loves": 15, "hates": 15, "facts": 20}
+LIST_LIMITS = {"traits": 30, "loves": 30, "hates": 30, "facts": 30}
 
 
 def clean(raw: dict | None) -> dict:

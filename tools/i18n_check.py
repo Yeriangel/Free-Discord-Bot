@@ -78,7 +78,8 @@ def python_strings() -> tuple[set[str], list[str]]:
 
 def ui_strings() -> tuple[set[str], list[str]]:
     found, stray = set(), []
-    js = (ROOT / "ui/app.js").read_text(encoding="utf-8")
+    # every UI script (app.js, cropper.js, ...): their t("...") texts need translations
+    js = "\n".join(f.read_text(encoding="utf-8") for f in sorted((ROOT / "ui").glob("*.js")))
     for m in JS_CALL.finditer(js):
         if HEB.search(m.group(2)):
             found.add(m.group(2).encode().decode("unicode_escape").encode("latin1").decode("utf-8") if "\\u" in m.group(2) else m.group(2))

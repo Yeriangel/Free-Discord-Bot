@@ -497,6 +497,38 @@ def test_bot_character():
     print("ok bot character: name-only works, sliders, NSFW cap, real-person parody rule, auto-fill parsing, chat uses it")
 
 
+def test_character_saves_even_if_discord_refuses_the_profile():
+    """Saving the Character must never be lost because Discord refused the bot's new name or picture."""
+    import tempfile
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from fastapi.testclient import TestClient
+
+    from botd import discord_rest
+    from botd.api import create_app
+
+    tmp = tempfile.mkdtemp()  # the database stays open while the app object exists
+    if True:
+        store = Store(Path(tmp) / "t.sqlite3")
+        store.upsert_guild(GID, "Test")
+        manager = MagicMock()
+        manager.owner_of.return_value = MagicMock(token_name="bot_token")
+        manager.live_guild.return_value = None
+        app = create_app(manager, store, "tok", 8123, lambda: None)
+        client = TestClient(app, base_url="http://127.0.0.1:8123")
+        refused = AsyncMock(side_effect=discord_rest.DiscordAPIError(429, "You are changing your avatar too fast"))
+        with patch.object(discord_rest, "update_member_profile", refused), patch("botd.secrets_store.get", return_value="x"):
+            r = client.put(f"/api/guilds/{GID}/persona", headers={"X-Session-Token": "tok"},
+                           json={"persona": {"enabled": True, "name": "Yeriangel", "traits": [f"t{i}" for i in range(25)]},
+                                 "apply_profile": True, "avatar": None})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["warning"] and "too fast" in body["warning"]
+        saved = store.get_guild(GID)["config"]["_persona"]
+        assert saved["name"] == "Yeriangel" and saved["enabled"] and len(saved["traits"]) == 25  # up to 30 now
+    print("ok character save")
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

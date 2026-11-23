@@ -70,6 +70,18 @@ async def get_application(token: str) -> dict:
     return await _request("GET", "/oauth2/applications/@me", token)
 
 
+BIO_MAX = 400
+
+
+async def update_bio(token: str, bio: str) -> str:
+    """The bot's "About me" everywhere on Discord (the application's description). Returns what Discord saved."""
+    bio = (bio or "").strip()
+    if len(bio) > BIO_MAX:
+        raise ValueError(tr("הביו ארוך מדי (עד {max} תווים)", max=BIO_MAX))
+    app = await _request("PATCH", "/applications/@me", token, json={"description": bio})
+    return app.get("description") or ""
+
+
 # Application flags. The "_LIMITED" ones are the privileged intents of bots in fewer than 100 servers,
 # and Discord lets the bot itself switch them on through the API (the others need Discord's approval).
 FLAG_PRESENCE_LIMITED = 1 << 13

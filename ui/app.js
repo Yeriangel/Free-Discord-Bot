@@ -616,8 +616,10 @@ function profileView() {
     };
   }
   const userEl = $("#bot-username");
+  const bioEl = $("#bot-bio");
   return { server: false, ready: !!p.username, name: (userEl && userEl.value) || p.username || "Bot",
-           avatar: S.avatarDraft || p.avatar_url || NONE_IMG, banner: S.bannerDraft || p.banner_url || "" };
+           avatar: S.avatarDraft || p.avatar_url || NONE_IMG, banner: S.bannerDraft || p.banner_url || "",
+           bio: bioEl ? bioEl.value : (p.bio || "") };
 }
 
 function viewProfilePreview() {
@@ -640,7 +642,8 @@ function viewProfilePreview() {
         <div class="pv-banner" style="${v.banner ? `background-image:url('${esc(v.banner)}')` : ""}"></div>
         <div class="pv-avatar-wrap big"><img src="${avatar}" alt=""><span class="pv-dot ${pr.status}"></span></div>
         <div class="pv-body"><div class="row" style="gap:6px"><b class="no-translate" style="font-size:17px">${name}</b><span class="pv-app">APP</span></div>
-          ${act}</div>
+          ${act}
+          ${v.bio ? `<div class="pv-bio"><div class="muted small">${esc(t("ביו"))}</div><div class="no-translate pv-bio-text">${esc(v.bio)}</div></div>` : ""}</div>
       </div>
     </div>`;
 }
@@ -697,7 +700,9 @@ function viewProfile() {
       </div>
       <div class="pz-col grow">
         ${nameField}
-        ${server ? `<div class="field"><span class="label">${esc(t("ביו בשרת הזה"))}</span><textarea id="sp-bio" maxlength="190" rows="2">${esc(sp.bio)}</textarea></div>` : ""}
+        ${server ? `<div class="field"><span class="label">${esc(t("ביו בשרת הזה"))}</span><textarea id="sp-bio" maxlength="190" rows="2">${esc(sp.bio)}</textarea></div>`
+          : `<div class="field"><span class="label">${esc(t("ביו (About me)"))}</span><textarea id="bot-bio" maxlength="400" rows="3" ${p ? "" : "disabled"}>${esc(p ? p.bio || "" : "")}</textarea>
+             <span class="hint">${esc(t("מה שכולם רואים בפרופיל של הבוט, בכל השרתים. עד 400 תווים."))}</span></div>`}
         <div class="field"><span class="label">סטטוס הבוט</span><select id="pr-status">${statusOpts}</select>
           ${server ? `<span class="hint">${esc(t("הסטטוס והפעילות משותפים לכל השרתים (מגבלה של דיסקורד)."))}</span>` : ""}</div>
         <div class="row" style="align-items:flex-start">
@@ -1673,6 +1678,8 @@ const actions = {
     const body = {};
     const name = $("#bot-username").value.trim();
     if (S.profile && name !== S.profile.username) body.username = name;
+    const bio = ($("#bot-bio") || {}).value;
+    if (S.profile && bio !== undefined && bio.trim() !== (S.profile.bio || "").trim()) body.bio = bio;
     if (S.avatarDraft) body.avatar = S.avatarDraft;
     if (S.bannerDraft) body.banner = S.bannerDraft;
     const pr = presenceDraft();
@@ -2303,6 +2310,7 @@ const PERSONA_SLIDERS = [
   ["content", "תוכן", ["לכל המשפחה", "", "ניטרלי", "", "למבוגרים"]],
 ];
 const PERSONA_TAGS = [["traits", "תכונות אופי"], ["loves", "אוהב"], ["hates", "שונא"]];
+const PERSONA_LIST_MAX = 30;
 
 async function loadPersona() {
   if (!S.guildId) return;
@@ -2413,12 +2421,19 @@ Object.assign(actions, {
   },
   async "persona-save"(btn) {
     S.pApply = !!($("#p-apply") || {}).checked;
+    document.querySelectorAll("[data-tag-input]").forEach((el) => {
+      const v = el.value.trim(), key = el.dataset.tagInput;
+      if (v && !S.pDraft[key].includes(v) && S.pDraft[key].length < PERSONA_LIST_MAX) S.pDraft[key].push(v);
+      el.value = "";
+    });
+    S.pDraft.facts = (S.pDraft.facts || []).filter((f) => String(f).trim());
     await guarded(btn, async () => {
       const r = await api("PUT", `/guilds/${S.guildId}/persona`, { persona: S.pDraft, apply_profile: S.pApply, avatar: S.pApply ? S.pAvatar : null });
       S.persona.persona = r.persona; S.pDraft = JSON.parse(JSON.stringify(r.persona)); S.pAvatar = null;
       if (S.pApply) S.serverProfile = null;
       render();
       toast(r.persona.enabled ? "הדמות נשמרה. ה-AI מדבר כמוה מעכשיו." : "הדמות נשמרה (כבויה).", "ok");
+      if (r.warning) toast(r.warning, "error");
     });
   },
   "tag-remove"(btn) { S.pDraft[btn.dataset.key].splice(+btn.dataset.i, 1); render(); },
@@ -2447,10 +2462,10 @@ document.addEventListener("change", (e) => {
   if (el.dataset.pf === "category") S.pDraft.category = el.value;
   if (el.id === "p-apply") S.pApply = el.checked;
   if (el.id === "pc-avatar-file" && el.files[0]) {
-    if (el.files[0].size > 8 * 1024 * 1024) { toast("התמונה גדולה מדי (עד 8MB)", "error"); return; }
-    const reader = new FileReader();
-    reader.onload = () => { S.pAvatar = reader.result; S.pApply = true; render(); };
-    reader.readAsDataURL(el.files[0]);
+    const file = el.files[0];
+    el.value = "";  // picking the same file again opens the editor again
+    if (file.size > 8 * 1024 * 1024) { toast("התמונה גדולה מדי (עד 8MB)", "error"); return; }
+    editImage(file, "avatar").then((data) => { if (data) { S.pAvatar = data; S.pApply = true; render(); } });
   }
 });
 document.addEventListener("keydown", (e) => {
@@ -2458,7 +2473,8 @@ document.addEventListener("keydown", (e) => {
   if (el.dataset && el.dataset.tagInput && e.key === "Enter") {
     e.preventDefault();
     const v = el.value.trim(), key = el.dataset.tagInput;
-    if (v && !S.pDraft[key].includes(v) && S.pDraft[key].length < 15) S.pDraft[key].push(v);
+    if (S.pDraft[key].length >= PERSONA_LIST_MAX) toast(t("אפשר עד {max} פריטים ברשימה הזו", { max: PERSONA_LIST_MAX }), "error");
+    else if (v && !S.pDraft[key].includes(v)) S.pDraft[key].push(v);
     render();
     const again = document.querySelector(`[data-tag-input="${key}"]`); if (again) again.focus();
   }
@@ -2548,10 +2564,13 @@ document.addEventListener("change", async (e) => {
   if (t.id === "sp-avatar-file" || t.id === "sp-banner-file") {
     const file = t.files[0];
     if (!file) return;
-    if (file.size > 8 * 1024 * 1024) { toast("התמונה גדולה מדי (עד 8MB)", "error"); t.value = ""; return; }
-    const reader = new FileReader();
-    reader.onload = () => { if (t.id === "sp-banner-file") S.spBanner = reader.result; else S.spAvatar = reader.result; $("#main").innerHTML = viewProfile(); };
-    reader.readAsDataURL(file);
+    t.value = "";
+    if (file.size > 8 * 1024 * 1024) { toast("התמונה גדולה מדי (עד 8MB)", "error"); return; }
+    const isBanner = t.id === "sp-banner-file";
+    const data = await editImage(file, isBanner ? "banner" : "avatar");
+    if (!data) return;
+    if (isBanner) S.spBanner = data; else S.spAvatar = data;
+    $("#main").innerHTML = viewProfile();
     return;
   }
   if (t.id === "guild-bot") {
@@ -2565,11 +2584,13 @@ document.addEventListener("change", async (e) => {
   if (t.id === "avatar-file" || t.id === "banner-file") {
     const file = t.files[0];
     if (!file) return;
-    if (file.size > 8 * 1024 * 1024) { toast("התמונה גדולה מדי (עד 8MB)", "error"); t.value = ""; return; }
-    const reader = new FileReader();
+    t.value = "";
+    if (file.size > 8 * 1024 * 1024) { toast("התמונה גדולה מדי (עד 8MB)", "error"); return; }
     const isBanner = t.id === "banner-file";
-    reader.onload = () => { if (isBanner) S.bannerDraft = reader.result; else S.avatarDraft = reader.result; render(); };
-    reader.readAsDataURL(file);
+    const data = await editImage(file, isBanner ? "banner" : "avatar");
+    if (!data) return;
+    if (isBanner) S.bannerDraft = data; else S.avatarDraft = data;
+    render();
     return;
   }
   if (t.id === "pr-status" || t.id === "pr-activity") {
@@ -2618,7 +2639,7 @@ document.addEventListener("input", (e) => {
   if (e.target.id === "search-input") { searchSel = 0; renderSearch(); }
   if (e.target.id === "pr-text") { presenceDraft().text = e.target.value; refreshProfilePreview(); }
   if (e.target.id === "pr-url") presenceDraft().url = e.target.value.trim();
-  if (e.target.id === "bot-username" || e.target.id === "sp-nick") refreshProfilePreview();
+  if (e.target.id === "bot-username" || e.target.id === "sp-nick" || e.target.id === "bot-bio") refreshProfilePreview();
 });
 window.addEventListener("beforeunload", (e) => { if (S.dirty) { e.preventDefault(); e.returnValue = ""; } });
 
