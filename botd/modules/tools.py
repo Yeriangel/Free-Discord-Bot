@@ -1,4 +1,5 @@
-"""Info and tool commands: /roblox-user, /pokedex, /morse, /binary, /qr, /gif, /opacity, /file-format, /seed.
+"""Info and tool commands: /roblox-user, /roblox-cloth, /pokedex, /morse, /binary, /qr, /gif, /opacity, /file-format,
+/seed, /pfp, /time.
 
 They work in servers (when the module is on there) and also as a user app ("Add App"): installed to a Discord
 account, they can be used in DMs and in any server, even where the bot itself is not a member.
@@ -6,7 +7,9 @@ account, they can be used in DMs and in any server, even where the bot itself is
 
 from ..i18n import N_, tr, ui_lang
 import asyncio
+import datetime as dt
 import io
+import re
 import logging
 import os
 import shutil
@@ -19,7 +22,7 @@ import httpx
 from discord import app_commands
 from discord.ext import commands
 
-from .. import images, qr
+from .. import images, qr, wintz
 from .common import COLOR_INFO, themed
 
 log = logging.getLogger("botd.tools")
@@ -155,6 +158,88 @@ def seed_map_url(seed: str, platform: str = "java_26_3", dimension: str = "overw
 
     return (f"https://www.chunkbase.com/apps/seed-map#seed={quote(seed.strip(), safe='-')}&platform={platform}"
             f"&dimension={dimension}&view=biomes.hillshade&x={x}&z={z}&zoom=0.5")
+
+
+# ---- /time ----------------------------------------------------------------------------------------------------------
+TIME_STYLES = [("t", N_("שעה קצרה")), ("T", N_("שעה עם שניות")), ("d", N_("תאריך קצר")), ("D", N_("תאריך ארוך")),
+               ("f", N_("תאריך ושעה")), ("F", N_("יום, תאריך ושעה")), ("R", N_("כמה זמן נשאר / עבר"))]
+TIME_RE = re.compile(r"^(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm)?$", re.I)
+
+
+def parse_clock(text: str) -> tuple[int, int] | None:
+    """'21:00', '9pm', '9:30 PM', '2130' -> (hour, minute)."""
+    t = text.strip().lower().replace(" ", "")
+    if re.fullmatch(r"\d{3,4}", t):
+        t = t[:-2] + ":" + t[-2:]
+    m = TIME_RE.match(t)
+    if not m:
+        return None
+    hour, minute, ampm = int(m.group(1)), int(m.group(2) or 0), m.group(3)
+    if ampm:
+        if not 1 <= hour <= 12:
+            return None
+        hour = hour % 12 + (12 if ampm == "pm" else 0)
+    return (hour, minute) if hour < 24 and minute < 60 else None
+
+
+def parse_day(text: str, today: dt.date) -> dt.date | None:
+    """'today', 'tomorrow', '24/12', '24/12/2026', '2026-12-24' (also 24.12 and 24-12)."""
+    t = text.strip().lower()
+    if t in ("today", "היום", "сегодня", "اليوم"):  # i18n: ignore (words people may type)
+        return today
+    if t in ("tomorrow", "מחר", "завтра", "غدا", "غدًا"):  # i18n: ignore
+        return today + dt.timedelta(days=1)
+    try:
+        m = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", t)
+        if m:
+            return dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        m = re.fullmatch(r"(\d{1,2})[/.\-](\d{1,2})(?:[/.\-](\d{2,4}))?", t)
+        if m:
+            year = int(m.group(3)) if m.group(3) else today.year
+            year += 2000 if year < 100 else 0
+            day = dt.date(year, int(m.group(2)), int(m.group(1)))
+            if not m.group(3) and day < today:
+                day = day.replace(year=today.year + 1)  # "24/12" means the next 24/12
+            return day
+    except ValueError:
+        return None
+    return None
+
+
+def event_time(clock: str, zone: str, day: str | None = None) -> tuple[int, str, dt.datetime] | str:
+    """-> (unix time, zone label, local time) or an error key ('time' / 'zone' / 'date')."""
+    hm = parse_clock(clock)
+    if hm is None:
+        return "time"
+    picked = wintz.resolve(zone)
+    if picked is None:
+        return "zone"
+    kind, value = picked
+    now_local = wintz.now_in(kind, value)
+    if day:
+        date = parse_day(day, now_local.date())
+        if date is None:
+            return "date"
+    else:
+        date = now_local.date()
+        if (hm[0], hm[1]) <= (now_local.hour, now_local.minute):
+            date += dt.timedelta(days=1)  # a time that already passed today means tomorrow
+    local = dt.datetime(date.year, date.month, date.day, hm[0], hm[1])
+    utc, offset = wintz.to_utc(kind, value, local)
+    unix = int(utc.replace(tzinfo=dt.timezone.utc).timestamp())
+    if kind == "zone":  # the English name, whatever language Windows has
+        return unix, f"{value.replace(' Standard Time', '')} ({wintz.fmt_offset(offset)})", local
+    return unix, value, local
+
+
+# ---- /roblox-cloth --------------------------------------------------------------------------------------------------
+CLOTH_TYPES = {2: "T-Shirt", 11: "Shirt", 12: "Pants"}
+TEMPLATE_RE = re.compile(r"<url>[^<]*?(?:[?&]id=|rbxassetid://)(\d+)", re.I)
+
+
+def template_id(asset_xml: str) -> str | None:
+    m = TEMPLATE_RE.search(asset_xml)
+    return m.group(1) if m else None
 
 
 # ---- the cog ------------------------------------------------------------------------------------------------------
@@ -305,6 +390,114 @@ class Tools(commands.Cog):
         view = discord.ui.View()
         view.add_item(discord.ui.Button(label=tr("פתח ב-Chunkbase", lang), url=url, emoji="🗺️"))
         await interaction.response.send_message(embed=embed, view=view)
+
+    # ---- /pfp
+    @app_commands.command(name="pfp", description=N_("תמונת הפרופיל של משתמש בגודל מלא"))
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(**EVERYWHERE)
+    @app_commands.describe(user=N_("המשתמש (אפשר גם להדביק מספר ID)"),
+                           server_picture=N_("להראות את התמונה שלו בשרת הזה, אם יש לו כזו"))
+    async def pfp(self, interaction: discord.Interaction, user: discord.User, server_picture: bool = False):
+        if not await self._allowed(interaction, "pfp"):
+            return
+        lang = self._lang(interaction)
+        asset = user.display_avatar
+        if not server_picture:
+            asset = user.avatar or user.default_avatar
+        elif isinstance(user, discord.Member) and user.guild_avatar:
+            asset = user.guild_avatar
+        await interaction.response.defer(thinking=True)
+        png = asset.with_format("png").with_size(1024) if not asset.url.endswith(".png") or asset.is_animated() \
+            else asset.with_size(1024)
+        if "embed/avatars" in asset.url:  # Discord's default picture has one size only
+            png = asset
+        try:
+            data = await png.read()
+        except discord.HTTPException:
+            return await interaction.followup.send(tr("לא הצלחתי להוריד את התמונה.", lang))
+        name = re.sub(r"[^\w.-]", "_", user.name)[:40] or "user"
+        embed = discord.Embed(title=tr("תמונת הפרופיל של {name}", lang, name=user.display_name), color=themed(lang, COLOR_INFO))
+        embed.set_image(url=f"attachment://{name}.png")
+        links = [f"[PNG]({png.url})"]
+        if "embed/avatars" not in asset.url:
+            links += [f"[JPG]({asset.with_format('jpg').with_size(1024).url})", f"[WEBP]({asset.with_format('webp').with_size(1024).url})"]
+            if asset.is_animated():
+                links.append(f"[GIF]({asset.with_format('gif').with_size(1024).url})")
+        embed.description = " · ".join(links)
+        embed.set_footer(text=f"ID {user.id}")
+        await interaction.followup.send(embed=embed, file=discord.File(io.BytesIO(data), f"{name}.png"))
+
+    # ---- /time
+    @app_commands.command(name="time", description=N_("שעה של אירוע שכל אחד רואה לפי השעון שלו"))
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(**EVERYWHERE)
+    @app_commands.describe(time=N_("השעה, למשל 21:00 או 9pm"), timezone=N_("אזור הזמן של השעה הזו (חפש עיר, או GMT+3)"),
+                           date=N_("התאריך, למשל 24/12 או tomorrow (ברירת מחדל: הפעם הבאה שהשעה הזו מגיעה)"))
+    async def time_cmd(self, interaction: discord.Interaction, time: app_commands.Range[str, 1, 12],
+                       timezone: app_commands.Range[str, 1, 100], date: app_commands.Range[str, 1, 20] | None = None):
+        if not await self._allowed(interaction, "time"):
+            return
+        lang = self._lang(interaction)
+        result = event_time(time, timezone, date)
+        if isinstance(result, str):
+            msg = {"time": tr("לא הבנתי את השעה. כתוב למשל 21:00 או 9pm.", lang),
+                   "zone": tr("לא מצאתי את אזור הזמן. בחר מהרשימה, או כתוב למשל GMT+3.", lang),
+                   "date": tr("לא הבנתי את התאריך. כתוב למשל 24/12, 24/12/2026 או tomorrow.", lang)}[result]
+            return await interaction.response.send_message(msg, ephemeral=True)
+        unix, zone_name, local = result
+        embed = discord.Embed(title=f"🕒 {local:%d/%m/%Y %H:%M} · {zone_name}"[:256], color=themed(lang, COLOR_INFO),
+                              description=f"## <t:{unix}:F>\n<t:{unix}:R>\n\n" + tr(
+                                  "כל אחד רואה את השעה הזו לפי אזור הזמן שלו. כדי לשים אותה בהודעה, העתק את הקוד:", lang))
+        for style, label in TIME_STYLES:
+            embed.add_field(name=tr(label, lang), value=f"<t:{unix}:{style}>\n`<t:{unix}:{style}>`", inline=True)
+        await interaction.response.send_message(embed=embed)
+
+    @time_cmd.autocomplete("timezone")
+    async def time_zone_autocomplete(self, interaction: discord.Interaction, current: str):
+        return [app_commands.Choice(name=name, value=value) for name, value in wintz.search(current)]
+
+    # ---- /roblox-cloth
+    @app_commands.command(name="roblox-cloth", description=N_("התבנית (טקסטורה) של חולצה או מכנסיים ברובלוקס"))
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(**EVERYWHERE)
+    @app_commands.describe(item=N_("מספר הפריט (ID) או קישור אליו בקטלוג של רובלוקס"))
+    async def roblox_cloth(self, interaction: discord.Interaction, item: app_commands.Range[str, 1, 200]):
+        if not await self._allowed(interaction, "roblox_cloth"):
+            return
+        lang = self._lang(interaction)
+        m = re.search(r"(\d{3,20})", item)
+        if not m:
+            return await interaction.response.send_message(tr("כתוב את מספר הפריט (ID) או הדבק את הקישור שלו.", lang), ephemeral=True)
+        aid = m.group(1)
+        await interaction.response.defer(thinking=True)
+        try:
+            async with httpx.AsyncClient(timeout=20, headers=HTTP_HEADERS, follow_redirects=True) as client:
+                details = await client.get(f"https://economy.roblox.com/v2/assets/{aid}/details")
+                info = details.json() if details.status_code == 200 else {}
+                kind = CLOTH_TYPES.get(info.get("AssetTypeId"))
+                if not kind:
+                    return await interaction.followup.send(tr("הפריט {id} הוא לא חולצה, מכנסיים או טי-שירט.", lang, id=aid)
+                                                           if info else tr("לא נמצא פריט עם המספר {id}.", lang, id=aid))
+                xml = await client.get(f"https://assetdelivery.roblox.com/v1/asset/", params={"id": aid})
+                tid = template_id(xml.text) if xml.status_code == 200 else None
+                if not tid:
+                    return await interaction.followup.send(tr("רובלוקס לא מסר את התבנית של הפריט הזה.", lang))
+                tex = await client.get("https://assetdelivery.roblox.com/v1/asset/", params={"id": tid})
+        except httpx.HTTPError:
+            return await interaction.followup.send(tr("רובלוקס לא עונה כרגע. נסה שוב עוד מעט.", lang))
+        data = tex.content
+        if tex.status_code != 200 or not data.startswith((b"\x89PNG", b"\xff\xd8")):
+            return await interaction.followup.send(tr("רובלוקס לא מסר את התבנית של הפריט הזה.", lang))
+        ext = "png" if data.startswith(b"\x89PNG") else "jpg"
+        name = re.sub(r"[^\w.-]", "_", info.get("Name") or kind)[:50]
+        embed = discord.Embed(title=f"{info.get('Name') or kind} · {kind}", url=f"https://www.roblox.com/catalog/{aid}",
+                              color=themed(lang, COLOR_INFO))
+        creator = (info.get("Creator") or {}).get("Name")
+        if creator:
+            embed.set_author(name=creator)
+        embed.set_image(url=f"attachment://{name}-template.{ext}")
+        embed.set_footer(text=tr("תבנית {id}", lang, id=tid))
+        await interaction.followup.send(embed=embed, file=discord.File(io.BytesIO(data), f"{name}-template.{ext}"))
 
     # ---- /roblox-user
     @app_commands.command(name="roblox-user", description=N_("מידע על משתמש רובלוקס"))

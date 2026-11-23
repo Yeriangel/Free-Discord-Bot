@@ -58,7 +58,7 @@ NEW_MODULES = {m["key"]: m for m in [
         _f("max_hours", "number", "משך מקסימלי לסקר (שעות)", 168, min=1, max=768),
     ], permissions=["send_polls"], commands=["/poll"]),
 
-    _m("tools", "utilities", "פקודות מידע וכלים", "רובלוקס, פוקידקס, מורס, בינארי, קודי QR, GIF, שקיפות, המרת פורמטים וסידים של מיינקראפט", [
+    _m("tools", "utilities", "פקודות מידע וכלים", "רובלוקס, פוקידקס, מורס, בינארי, QR, GIF, שקיפות, המרת פורמטים, סידים של מיינקראפט, תמונות פרופיל ואזורי זמן", [
         _f("roblox", "bool", "/roblox-user: מידע על משתמש רובלוקס", True),
         _f("pokedex", "bool", "/pokedex: מידע ותמונה של פוקימון", True),
         _f("morse", "bool", "/morse: תרגום למורס וממורס", True),
@@ -69,8 +69,12 @@ NEW_MODULES = {m["key"]: m for m in [
         _f("file_format", "bool", "/file-format: המרת תמונה לפורמט אחר", True,
            hint="צריך ffmpeg במחשב שמריץ את הבוט (winget install ffmpeg)"),
         _f("seed", "bool", "/seed: מפת סיד מיינקראפט ב-Chunkbase", True),
+        _f("pfp", "bool", "/pfp: תמונת פרופיל של משתמש", True),
+        _f("time", "bool", "/time: שעה שכל אחד רואה לפי אזור הזמן שלו", True),
+        _f("roblox_cloth", "bool", "/roblox-cloth: תבנית של חולצה או מכנסיים ברובלוקס", True),
     ], permissions=["embed_links", "attach_files"],
-       commands=["/roblox-user", "/pokedex", "/morse", "/binary", "/qr", "/gif", "/opacity", "/file-format", "/seed"]),
+       commands=["/roblox-user", "/roblox-cloth", "/pokedex", "/morse", "/binary", "/qr", "/gif", "/opacity", "/file-format",
+                 "/seed", "/pfp", "/time"]),
 
     _m("embed_messages", "utilities", "הודעות Embed", "הודעות מעוצבות עם צבעים ותמונות, נשלחות מהאפליקציה", [
         _f("channel_id", "channel", "ערוץ", ""),

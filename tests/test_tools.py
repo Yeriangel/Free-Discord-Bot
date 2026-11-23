@@ -234,9 +234,49 @@ def test_seed_map_link():
     assert len(tools.SEED_PLATFORMS) <= 25  # Discord allows 25 choices
 
 
+def test_time_zones_and_parsing():
+    import datetime as dt
+
+    from botd import wintz
+
+    D = dt.datetime
+    if wintz.zones():  # Windows' own time zone rules, with summer time
+        assert wintz.utc_offset_minutes("Israel Standard Time", D(2026, 7, 1, 12)) == 180
+        assert wintz.utc_offset_minutes("Israel Standard Time", D(2026, 12, 24, 21)) == 120
+        assert wintz.utc_offset_minutes("Eastern Standard Time", D(2026, 3, 9, 12)) == -240
+        assert wintz.utc_offset_minutes("AUS Eastern Standard Time", D(2026, 1, 15, 12)) == 660  # southern summer
+        assert wintz.utc_offset_minutes("India Standard Time", D(2026, 6, 1)) == 330
+        assert wintz.search("jerusalem")[0][1] == "Israel Standard Time"
+        assert tools.event_time("21:00", "Israel Standard Time", "24/12/2026")[0] == 1798138800  # 19:00 UTC
+        assert tools.event_time("9pm", "jerusalem", "1/7/2027")[0] == 1814464800  # summer: 18:00 UTC
+        assert "Israel (UTC+02:00)" == tools.event_time("21:00", "Israel Standard Time", "24/12/2026")[1]
+    # fixed offsets work everywhere
+    assert wintz.parse_offset("GMT+3") == 180 and wintz.parse_offset("utc-5:30") == -330 and wintz.parse_offset("+15") is None
+    assert tools.event_time("10:00", "GMT+3", "1/1/2027")[:2] == (1798786800, "UTC+03:00")  # 07:00 UTC
+    assert tools.event_time("25:00", "GMT+3") == "time"
+    assert tools.event_time("10:00", "nowhere-zone") == "zone"
+    assert tools.event_time("10:00", "GMT+3", "31/02") == "date"
+    assert tools.parse_clock("2130") == (21, 30) and tools.parse_clock("12am") == (0, 0) and tools.parse_clock("12:15 PM") == (12, 15)
+    today = dt.date(2026, 11, 23)
+    assert tools.parse_day("tomorrow", today) == dt.date(2026, 11, 24)
+    assert tools.parse_day("24/12", today) == dt.date(2026, 12, 24)
+    assert tools.parse_day("1/1", today) == dt.date(2027, 1, 1)  # already passed this year -> next year
+    assert tools.parse_day("2027-03-05", today) == dt.date(2027, 3, 5)
+    # no date: a time that already passed today means tomorrow
+    unix = tools.event_time("00:00", "UTC+00:00")[0]
+    assert 0 < unix - dt.datetime.now(dt.timezone.utc).timestamp() <= 86400
+
+
+def test_roblox_template_id():
+    xml = '<Content name="ShirtTemplate"><url>http://www.roblox.com/asset/?id=607785311</url></Content>'
+    assert tools.template_id(xml) == "607785311"
+    assert tools.template_id('<url>rbxassetid://123456789</url>') == "123456789"
+    assert tools.template_id("<roblox></roblox>") is None
+
+
 def test_commands_install_everywhere():
     names = {c.name: c for c in tools.Tools.__cog_app_commands__}
-    assert set(names) == {"roblox-user", "pokedex", "morse", "binary", "qr", "gif", "opacity", "file-format", "seed"}
+    assert set(names) == {"roblox-user", "pokedex", "morse", "binary", "qr", "gif", "opacity", "file-format", "seed", "pfp", "time", "roblox-cloth"}
     for c in names.values():
         assert c.allowed_installs.guild and c.allowed_installs.user, c.name
         assert c.allowed_contexts.guild and c.allowed_contexts.dm_channel and c.allowed_contexts.private_channel, c.name
