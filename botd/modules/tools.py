@@ -573,25 +573,38 @@ class Tools(commands.Cog):
                         return await interaction.followup.send(tr("הפריט {id} הוא לא חולצה, מכנסיים או טי-שירט.", lang, id=aid)
                                                                if info else tr("לא נמצא פריט עם המספר {id}.", lang, id=aid))
                     tid = None
-                try:
-                    if tid is None:
+                data = b""
+                if tid is None:  # 1. the item's own file names its template (works for Roblox's items, or with a key)
+                    try:
                         tid = roblox_assets.linked_asset_id(await roblox_assets.download(client, aid, key))
-                    data = await roblox_assets.download(client, tid, key) if tid else b""
-                except roblox_assets.NeedsKey:
+                    except roblox_assets.NeedsKey:
+                        tid = None
+                if tid is None:  # 2. the hidden template image Roblox made when the item was uploaded
+                    tid = await roblox_assets.find_template_image(client, aid, info)
+                if tid:
+                    try:  # the original file when allowed, otherwise Roblox's public picture of it
+                        data = await roblox_assets.download(client, tid, key)
+                    except roblox_assets.NeedsKey:
+                        data = b""
+                    if not data.startswith((b"\x89PNG", b"\xff\xd8")):
+                        data = await roblox_assets.image_png(client, tid) or b""
+                if not data:
                     return await self._cloth_preview(interaction, lang, client, aid, info, kind, bool(key))
-        except httpx.HTTPError:
+        except (httpx.HTTPError, ValueError):
             return await interaction.followup.send(tr("רובלוקס לא עונה כרגע. נסה שוב עוד מעט.", lang))
-        if not data.startswith((b"\x89PNG", b"\xff\xd8")):
-            return await interaction.followup.send(tr("רובלוקס לא מסר את התבנית של הפריט הזה.", lang))
         ext = "png" if data.startswith(b"\x89PNG") else "jpg"
-        name = re.sub(r"[^\w.-]", "_", info.get("Name") or kind)[:50]
-        embed = discord.Embed(title=f"{info.get('Name') or kind} · {kind}", url=f"https://www.roblox.com/catalog/{aid}",
+        name = re.sub(r"[^\w.-]", "_", (info.get("Name") or kind).strip())[:50] or "template"
+        embed = discord.Embed(title=(info.get("Name") or kind).strip()[:256], url=f"https://www.roblox.com/catalog/{aid}",
                               color=themed(lang, COLOR_INFO))
-        creator = (info.get("Creator") or {}).get("Name")
-        if creator:
-            embed.set_author(name=creator)
+        creator = info.get("Creator") or {}
+        if creator.get("Name"):
+            kind_path = "groups" if creator.get("CreatorType") == "Group" else "users"
+            link = f"https://www.roblox.com/{kind_path}/{creator.get('CreatorTargetId')}" if creator.get("CreatorTargetId") else None
+            embed.description = tr("נוצר על ידי {creator}", lang, creator=f"[{creator['Name']}]({link})" if link else creator["Name"])
+        embed.add_field(name=tr("מספר התמונה", lang), value=str(tid))
+        embed.add_field(name=tr("מספר הפריט", lang), value=str(aid))
+        embed.add_field(name=tr("סוג", lang), value=kind)
         embed.set_image(url=f"attachment://{name}-template.{ext}")
-        embed.set_footer(text=tr("תבנית {id}", lang, id=tid))
         await interaction.followup.send(embed=embed, file=discord.File(io.BytesIO(data), f"{name}-template.{ext}"))
 
     async def _cloth_preview(self, interaction, lang, client, aid, info, kind, has_key: bool) -> None:
@@ -604,11 +617,7 @@ class Tools(commands.Cog):
             embed.set_author(name=creator)
         if image:
             embed.set_image(url=image)
-        if has_key:
-            embed.description = tr("מפתח ה-API של רובלוקס לא עבד. בדוק שיש לו הרשאת legacy-asset:manage.", lang)
-        else:
-            embed.description = tr("רובלוקס נותן את התבנית של פריטים שיצרו שחקנים רק עם מפתח API (חינמי). מי שמריץ את הבוט "
-                                   "יכול להוסיף אותו באפליקציה, בעמוד 'חיבור והגדרות'. בינתיים, זו התמונה של הפריט.", lang)
+        embed.description = tr("לא מצאתי את התבנית של הפריט הזה (אולי הוא ישן מאוד). זו התמונה של הפריט.", lang)
         await interaction.followup.send(embed=embed)
 
     # ---- /roblox-audio

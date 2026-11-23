@@ -340,6 +340,40 @@ def test_allowed_users_and_default_modules():
         store.close() if hasattr(store, "close") else None
 
 
+def test_template_search_rules():
+    """The hidden template image: nearest image below the item with the right description, same creator first."""
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from botd import roblox_assets
+
+    item = {"AssetTypeId": 12, "Creator": {"CreatorTargetId": 7, "CreatorType": "Group"}}
+    images = {995: {"AssetTypeId": 1, "Description": "Pants Image", "Creator": {"CreatorTargetId": 99}},
+              990: {"AssetTypeId": 1, "Description": "Pants Image", "Creator": {"CreatorTargetId": 7}},
+              998: {"AssetTypeId": 1, "Description": "Decal", "Creator": {"CreatorTargetId": 7}}}
+
+    class Resp:
+        def __init__(self, data, status=200):
+            self.status_code, self._data = status, data
+
+        def json(self):
+            return self._data
+
+    async def get(url, params=None):
+        if "thumbnails" in url:
+            ids = [int(x) for x in params["assetIds"].split(",")]
+            return Resp({"data": [{"targetId": i, "imageUrl": f"https://tr/x/{'Image' if i in images else 'Pants'}/Png"} for i in ids]})
+        aid = int(url.rstrip("/").split("/")[-2])
+        return Resp(images[aid]) if aid in images else Resp({}, 400)
+
+    client = MagicMock()
+    client.get = get
+    assert asyncio.run(roblox_assets.find_template_image(client, "1000", item)) == "990"  # same creator wins
+    images[990]["Creator"]["CreatorTargetId"] = 5
+    assert asyncio.run(roblox_assets.find_template_image(client, "1000", item)) == "995"  # else the nearest match
+    assert asyncio.run(roblox_assets.find_template_image(client, "1000", {"AssetTypeId": 8})) is None  # not clothing
+
+
 def test_english_time_zone_names():
     import re
 

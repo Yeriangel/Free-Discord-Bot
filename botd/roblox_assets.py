@@ -108,6 +108,57 @@ async def download(client: httpx.AsyncClient, asset_id: str, api_key: str | None
     return f.content
 
 
+# When clothing is uploaded, Roblox makes a hidden image of the template with this description, a little below the
+# item's ID (same creator, or for older items the person who uploaded it). Its picture is public.
+TEMPLATE_DESCRIPTIONS = {11: "Shirt Image", 12: "Pants Image", 2: "T-Shirt Image"}
+SEARCH_BATCHES = 5      # look up to 500 IDs below the item
+MAX_DETAIL_CHECKS = 40  # and check at most this many images closely
+
+
+async def find_template_image(client: httpx.AsyncClient, item_id: str, info: dict) -> str | None:
+    """The ID of the template image of a shirt / pants / T-shirt, found without signing in (or None)."""
+    want = TEMPLATE_DESCRIPTIONS.get(info.get("AssetTypeId"))
+    if not want:
+        return None
+    creator = (info.get("Creator") or {}).get("CreatorTargetId")
+    base, checks, fallback = int(item_id), 0, None
+    for batch in range(SEARCH_BATCHES):
+        ids = [base - k for k in range(1 + batch * 100, 101 + batch * 100) if base - k > 0]
+        r = await client.get("https://thumbnails.roblox.com/v1/assets",
+                             params={"assetIds": ",".join(map(str, ids)), "size": "420x420", "format": "Png"})
+        rows = r.json().get("data", []) if r.status_code == 200 else []
+        images = sorted((x["targetId"] for x in rows if "/Image/" in (x.get("imageUrl") or "")), reverse=True)
+        for image_id in images:  # nearest first
+            if checks >= MAX_DETAIL_CHECKS:
+                return str(fallback) if fallback else None
+            checks += 1
+            d = await client.get(f"https://economy.roblox.com/v2/assets/{image_id}/details")
+            if d.status_code != 200:
+                continue
+            e = d.json()
+            if e.get("AssetTypeId") != 1 or (e.get("Description") or "").strip() != want:
+                continue
+            if (e.get("Creator") or {}).get("CreatorTargetId") == creator:
+                return str(image_id)
+            fallback = fallback or image_id
+        if fallback:
+            return str(fallback)
+    return None
+
+
+async def image_png(client: httpx.AsyncClient, image_id: str, size: str = "700x700") -> bytes | None:
+    """The picture of an image asset (public, no signing in needed)."""
+    r = await client.get("https://thumbnails.roblox.com/v1/assets", params={"assetIds": image_id, "size": size, "format": "Png"})
+    try:
+        item = (r.json().get("data") or [{}])[0]
+    except ValueError:
+        return None
+    if item.get("state") != "Completed" or not item.get("imageUrl"):
+        return None
+    f = await client.get(item["imageUrl"])
+    return f.content if f.status_code == 200 and f.content.startswith(b"\x89PNG") else None
+
+
 async def thumbnail(client: httpx.AsyncClient, asset_id: str) -> str | None:
     r = await client.get("https://thumbnails.roblox.com/v1/assets",
                          params={"assetIds": asset_id, "size": "420x420", "format": "Png"})

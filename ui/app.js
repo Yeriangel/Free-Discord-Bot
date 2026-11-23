@@ -546,8 +546,8 @@ function viewConnection() {
       ${secretField("twitch_client_id", "Twitch Client ID", "")}
       ${secretField("twitch_client_secret", "Twitch Client Secret", "")}
     </details>
-    <details class="card section"><summary><b>${esc(t("Roblox (לא חובה, לתבניות של בגדים)"))}</b></summary>
-      <p class="desc" style="margin:10px 0">${t('בלי מפתח, /roblox-cloth מביא תבניות רק של בגדים שרובלוקס יצרה. עם מפתח חינמי הוא מביא גם בגדים של שחקנים: ב-<a href="https://create.roblox.com/dashboard/credentials" target="_blank">Creator Dashboard</a> לוחצים Create API Key, מוסיפים את Legacy Asset עם ההרשאה legacy-asset:manage, ומעתיקים את המפתח.')}</p>
+    <details class="card section"><summary><b>${esc(t("Roblox (לא חובה, לסאונדים של שחקנים)"))}</b></summary>
+      <p class="desc" style="margin:10px 0">${t('לא חובה. /roblox-cloth מוצא תבניות לבד. מפתח חינמי מוסיף ל-/roblox-audio גם סאונדים שהעלו שחקנים: ב-<a href="https://create.roblox.com/dashboard/credentials" target="_blank">Creator Dashboard</a> לוחצים Create API Key, מוסיפים את Legacy Asset עם ההרשאה legacy-asset:manage, ומעתיקים את המפתח.')}</p>
       ${secretField("roblox_api_key", "Roblox Open Cloud API Key", "")}
     </details>
     ${viewAccounts()}
