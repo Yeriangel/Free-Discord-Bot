@@ -111,6 +111,8 @@ class ManagedBot(commands.Bot):
                     yield from walk(c.commands)
 
         for cmd in walk(self.tree.get_commands()):
+            if isinstance(cmd, discord.app_commands.ContextMenu):  # right-click commands: a name only
+                continue
             src = cmd.extras.setdefault("src_description", _plain(cmd.description))
             cmd.description = (cmd.extras.get("custom_description") or tr(src, lang))[:100]
             for param in getattr(cmd, "_params", {}).values():
@@ -180,7 +182,7 @@ async def command_specs(store: Store) -> list[dict]:
             await bot.add_cog(cog_cls(bot))
         _COMMAND_SPECS = [{"name": c.name, "description": _plain(c.description),
                            "subcommands": [s.name for s in getattr(c, "commands", [])]}
-                          for c in bot.tree.get_commands()]
+                          for c in bot.tree.get_commands() if not isinstance(c, discord.app_commands.ContextMenu)]
         for name in list(bot.cogs):
             await bot.remove_cog(name)
     return _COMMAND_SPECS

@@ -64,7 +64,8 @@ NEW_MODULES = {m["key"]: m for m in [
         _f("morse", "bool", "/morse: תרגום למורס וממורס", True),
         _f("binary", "bool", "/binary: תרגום לבינארי ומבינארי", True),
         _f("qr", "bool", "/qr: יצירת קוד QR", True),
-        _f("gif", "bool", "/gif: המרת סרטון ל-GIF", True, hint="צריך ffmpeg במחשב שמריץ את הבוט (winget install ffmpeg)"),
+        _f("gif", "bool", "/gif: המרת סרטון או תמונה ל-GIF", True,
+           hint="גם קליק ימני על הודעה > Apps > Make GIF, או תגובה !gif להודעה. צריך ffmpeg (winget install ffmpeg)"),
         _f("opacity", "bool", "/opacity: שינוי שקיפות של תמונה", True, hint="צריך ffmpeg במחשב שמריץ את הבוט (winget install ffmpeg)"),
         _f("file_format", "bool", "/file-format: המרת תמונה לפורמט אחר", True,
            hint="צריך ffmpeg במחשב שמריץ את הבוט (winget install ffmpeg)"),
@@ -72,9 +73,10 @@ NEW_MODULES = {m["key"]: m for m in [
         _f("pfp", "bool", "/pfp: תמונת פרופיל של משתמש", True),
         _f("time", "bool", "/time: שעה שכל אחד רואה לפי אזור הזמן שלו", True),
         _f("roblox_cloth", "bool", "/roblox-cloth: תבנית של חולצה או מכנסיים ברובלוקס", True),
-    ], permissions=["embed_links", "attach_files"],
+        _f("clear", "bool", "/clear: מחיקת ההודעות האחרונות של הבוט", True),
+    ], permissions=["embed_links", "attach_files", "read_message_history"],
        commands=["/roblox-user", "/roblox-cloth", "/pokedex", "/morse", "/binary", "/qr", "/gif", "/opacity", "/file-format",
-                 "/seed", "/pfp", "/time"]),
+                 "/seed", "/pfp", "/time", "/clear", "Make GIF"]),
 
     _m("embed_messages", "utilities", "הודעות Embed", "הודעות מעוצבות עם צבעים ותמונות, נשלחות מהאפליקציה", [
         _f("channel_id", "channel", "ערוץ", ""),

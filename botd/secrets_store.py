@@ -9,7 +9,8 @@ from keyring.errors import PasswordDeleteError
 from .redact import register_secret, unregister_secret
 
 SERVICE = os.environ.get("BOTD_KEYRING_SERVICE", "DiscordBotManager")
-NAMES = ("bot_token", "anthropic_key", "openai_key", "xai_key", "twitch_client_id", "twitch_client_secret")
+NAMES = ("bot_token", "anthropic_key", "openai_key", "xai_key", "twitch_client_id", "twitch_client_secret",
+         "roblox_api_key")
 
 
 def _check(name: str) -> None:

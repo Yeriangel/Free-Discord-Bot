@@ -1,5 +1,5 @@
 """Info and tool commands: /roblox-user, /roblox-cloth, /pokedex, /morse, /binary, /qr, /gif, /opacity, /file-format,
-/seed, /pfp, /time.
+/seed, /pfp, /time, /clear, plus "Make GIF" (right click on a message) and "!gif" as a reply.
 
 They work in servers (when the module is on there) and also as a user app ("Add App"): installed to a Discord
 account, they can be used in DMs and in any server, even where the bot itself is not a member.
@@ -22,7 +22,7 @@ import httpx
 from discord import app_commands
 from discord.ext import commands
 
-from .. import images, qr, wintz
+from .. import images, qr, roblox_assets, secrets_store, wintz
 from .common import COLOR_INFO, themed
 
 log = logging.getLogger("botd.tools")
@@ -228,7 +228,8 @@ def event_time(clock: str, zone: str, day: str | None = None) -> tuple[int, str,
     utc, offset = wintz.to_utc(kind, value, local)
     unix = int(utc.replace(tzinfo=dt.timezone.utc).timestamp())
     if kind == "zone":  # the English name, whatever language Windows has
-        return unix, f"{value.replace(' Standard Time', '')} ({wintz.fmt_offset(offset)})", local
+        place = wintz.english_city(value) or value.replace(" Standard Time", "")
+        return unix, f"{place} ({wintz.fmt_offset(offset)})", local
     return unix, value, local
 
 
@@ -238,8 +239,44 @@ TEMPLATE_RE = re.compile(r"<url>[^<]*?(?:[?&]id=|rbxassetid://)(\d+)", re.I)
 
 
 def template_id(asset_xml: str) -> str | None:
-    m = TEMPLATE_RE.search(asset_xml)
-    return m.group(1) if m else None
+    return roblox_assets.linked_asset_id(asset_xml.encode("utf-8", "replace"))
+
+
+ROBLOX_PROFILE_RE = re.compile(r"roblox\.com/users/(\d+)", re.I)
+
+
+def roblox_query(text: str) -> tuple[str, str]:
+    """What the user typed -> ('id', '156') or ('name', 'builderman'). Profile links and @names work too."""
+    t = text.strip()
+    m = ROBLOX_PROFILE_RE.search(t)
+    if m:
+        return "id", m.group(1)
+    t = t.lstrip("@").strip()
+    return ("id", t) if t.isdigit() else ("name", t)
+
+
+def pokemon_slug(text: str) -> str:
+    """'Mr. Mime' -> 'mr-mime', 'Farfetch'd' -> 'farfetchd', 'Nidoran♀' -> 'nidoran-f', '#025' -> '25'."""
+    t = text.strip().lower().lstrip("#").strip()
+    if t.isdigit():
+        return str(int(t))
+    t = t.replace("♀", "-f").replace("♂", "-m").replace("é", "e")
+    t = re.sub(r"[.'’:]", "", t)
+    t = re.sub(r"[\s_]+", "-", t)
+    return re.sub(r"-+", "-", t).strip("-")
+
+
+GIF_REPLY_WORDS = ("!gif", "/gif")
+MEDIA_SUFFIXES = (".mp4", ".mov", ".webm", ".mkv", ".avi", ".gif", ".png", ".jpg", ".jpeg", ".webp")
+
+
+def media_of(message: discord.Message):
+    """The first video or picture attached to a message (or None)."""
+    for a in message.attachments:
+        ctype = (a.content_type or "").lower()
+        if ctype.startswith(("video/", "image/")) or a.filename.lower().endswith(MEDIA_SUFFIXES):
+            return a
+    return None
 
 
 # ---- the cog ------------------------------------------------------------------------------------------------------
@@ -250,6 +287,32 @@ QR_KINDS = [("url", N_("קישור")), ("text", N_("טקסט")), ("wifi", N_("Wi
 class Tools(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.pokemon_names: list[tuple[int, str]] = []  # (number, name), loaded once for the /pokedex suggestions
+        self.gif_menu = app_commands.ContextMenu(name="Make GIF", callback=self.gif_from_message,
+                                                 allowed_installs=app_commands.AppInstallationType(guild=True, user=True),
+                                                 allowed_contexts=app_commands.AppCommandContext(
+                                                     guild=True, dm_channel=True, private_channel=True))
+
+    async def cog_load(self) -> None:
+        self.bot.tree.add_command(self.gif_menu)
+        asyncio.get_running_loop().create_task(self._load_pokemon_names())
+
+    async def cog_unload(self) -> None:
+        self.bot.tree.remove_command(self.gif_menu.name, type=self.gif_menu.type)
+
+    async def _load_pokemon_names(self) -> None:
+        try:
+            async with httpx.AsyncClient(timeout=20, headers=HTTP_HEADERS) as client:
+                r = await client.get("https://pokeapi.co/api/v2/pokemon-species", params={"limit": 2000})
+                rows = r.json().get("results", []) if r.status_code == 200 else []
+        except (httpx.HTTPError, ValueError):
+            return
+        names = []
+        for row in rows:
+            m = re.search(r"/(\d+)/?$", row.get("url", ""))
+            if m:
+                names.append((int(m.group(1)), row["name"]))
+        self.pokemon_names = sorted(names)
 
     # which language, and is the command allowed here
     def _lang(self, interaction: discord.Interaction):
@@ -470,23 +533,29 @@ class Tools(commands.Cog):
             return await interaction.response.send_message(tr("כתוב את מספר הפריט (ID) או הדבק את הקישור שלו.", lang), ephemeral=True)
         aid = m.group(1)
         await interaction.response.defer(thinking=True)
+        key = secrets_store.get("roblox_api_key")
         try:
-            async with httpx.AsyncClient(timeout=20, headers=HTTP_HEADERS, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=25, headers=HTTP_HEADERS, follow_redirects=True) as client:
                 details = await client.get(f"https://economy.roblox.com/v2/assets/{aid}/details")
                 info = details.json() if details.status_code == 200 else {}
-                kind = CLOTH_TYPES.get(info.get("AssetTypeId"))
-                if not kind:
-                    return await interaction.followup.send(tr("הפריט {id} הוא לא חולצה, מכנסיים או טי-שירט.", lang, id=aid)
-                                                           if info else tr("לא נמצא פריט עם המספר {id}.", lang, id=aid))
-                xml = await client.get(f"https://assetdelivery.roblox.com/v1/asset/", params={"id": aid})
-                tid = template_id(xml.text) if xml.status_code == 200 else None
-                if not tid:
-                    return await interaction.followup.send(tr("רובלוקס לא מסר את התבנית של הפריט הזה.", lang))
-                tex = await client.get("https://assetdelivery.roblox.com/v1/asset/", params={"id": tid})
+                type_id = info.get("AssetTypeId")
+                if type_id == 1:  # the user already gave the template (an image)
+                    kind, tid = "Image", aid
+                else:
+                    kind = CLOTH_TYPES.get(type_id) or ("Decal" if type_id == 13 else None)
+                    if not kind:
+                        return await interaction.followup.send(tr("הפריט {id} הוא לא חולצה, מכנסיים או טי-שירט.", lang, id=aid)
+                                                               if info else tr("לא נמצא פריט עם המספר {id}.", lang, id=aid))
+                    tid = None
+                try:
+                    if tid is None:
+                        tid = roblox_assets.linked_asset_id(await roblox_assets.download(client, aid, key))
+                    data = await roblox_assets.download(client, tid, key) if tid else b""
+                except roblox_assets.NeedsKey:
+                    return await self._cloth_preview(interaction, lang, client, aid, info, kind, bool(key))
         except httpx.HTTPError:
             return await interaction.followup.send(tr("רובלוקס לא עונה כרגע. נסה שוב עוד מעט.", lang))
-        data = tex.content
-        if tex.status_code != 200 or not data.startswith((b"\x89PNG", b"\xff\xd8")):
+        if not data.startswith((b"\x89PNG", b"\xff\xd8")):
             return await interaction.followup.send(tr("רובלוקס לא מסר את התבנית של הפריט הזה.", lang))
         ext = "png" if data.startswith(b"\x89PNG") else "jpg"
         name = re.sub(r"[^\w.-]", "_", info.get("Name") or kind)[:50]
@@ -499,35 +568,46 @@ class Tools(commands.Cog):
         embed.set_footer(text=tr("תבנית {id}", lang, id=tid))
         await interaction.followup.send(embed=embed, file=discord.File(io.BytesIO(data), f"{name}-template.{ext}"))
 
+    async def _cloth_preview(self, interaction, lang, client, aid, info, kind, has_key: bool) -> None:
+        """Roblox keeps player-made templates for signed-in requests: show the item's picture and explain."""
+        image = await roblox_assets.thumbnail(client, aid)
+        embed = discord.Embed(title=f"{info.get('Name') or kind} · {kind}", url=f"https://www.roblox.com/catalog/{aid}",
+                              color=themed(lang, COLOR_INFO))
+        creator = (info.get("Creator") or {}).get("Name")
+        if creator:
+            embed.set_author(name=creator)
+        if image:
+            embed.set_image(url=image)
+        if has_key:
+            embed.description = tr("מפתח ה-API של רובלוקס לא עבד. בדוק שיש לו הרשאת legacy-asset:manage.", lang)
+        else:
+            embed.description = tr("רובלוקס נותן את התבנית של פריטים שיצרו שחקנים רק עם מפתח API (חינמי). מי שמריץ את הבוט "
+                                   "יכול להוסיף אותו באפליקציה, בעמוד 'חיבור והגדרות'. בינתיים, זו התמונה של הפריט.", lang)
+        await interaction.followup.send(embed=embed)
+
     # ---- /roblox-user
     @app_commands.command(name="roblox-user", description=N_("מידע על משתמש רובלוקס"))
     @app_commands.allowed_installs(guilds=True, users=True)
     @app_commands.allowed_contexts(**EVERYWHERE)
-    @app_commands.describe(user=N_("שם משתמש או מספר (ID) ברובלוקס"))
-    async def roblox_user(self, interaction: discord.Interaction, user: app_commands.Range[str, 1, 40]):
+    @app_commands.describe(user=N_("שם משתמש, שם תצוגה, מספר (ID) או קישור לפרופיל ברובלוקס"))
+    async def roblox_user(self, interaction: discord.Interaction, user: app_commands.Range[str, 1, 100]):
         if not await self._allowed(interaction, "roblox"):
             return
         lang = self._lang(interaction)
         await interaction.response.defer(thinking=True)
+        kind, value = roblox_query(user)
         try:
             async with httpx.AsyncClient(timeout=15, headers=HTTP_HEADERS) as client:
-                uid = user.strip()
-                if not uid.isdigit():
-                    r = await client.post("https://users.roblox.com/v1/usernames/users",
-                                          json={"usernames": [uid], "excludeBannedUsers": False})
-                    found = (r.json().get("data") or []) if r.status_code == 200 else []
-                    if not found:
-                        return await interaction.followup.send(tr("לא נמצא משתמש רובלוקס בשם {name}.", lang, name=user))
-                    uid = str(found[0]["id"])
-                r = await client.get(f"https://users.roblox.com/v1/users/{uid}")
-                if r.status_code != 200:
+                uid = await self._roblox_user_id(client, kind, value)
+                if not uid:
                     return await interaction.followup.send(tr("לא נמצא משתמש רובלוקס בשם {name}.", lang, name=user))
+                r = await client.get(f"https://users.roblox.com/v1/users/{uid}")
                 info = r.json()
                 counts = await asyncio.gather(*[client.get(f"https://friends.roblox.com/v1/users/{uid}/{k}/count")
                                                 for k in ("friends", "followers", "followings")], return_exceptions=True)
                 thumb = await client.get("https://thumbnails.roblox.com/v1/users/avatar",
                                          params={"userIds": uid, "size": "420x420", "format": "Png"})
-        except httpx.HTTPError:
+        except (httpx.HTTPError, ValueError):
             return await interaction.followup.send(tr("רובלוקס לא עונה כרגע. נסה שוב עוד מעט.", lang))
 
         def count(i):
@@ -556,27 +636,43 @@ class Tools(commands.Cog):
         embed.set_footer(text="Roblox")
         await interaction.followup.send(embed=embed)
 
+    async def _roblox_user_id(self, client: httpx.AsyncClient, kind: str, value: str) -> str | None:
+        """An ID, a username or a display name -> the user's ID (None if nobody matches)."""
+        if kind == "id":
+            r = await client.get(f"https://users.roblox.com/v1/users/{value}")
+            if r.status_code == 200:
+                return value
+        r = await client.post("https://users.roblox.com/v1/usernames/users",
+                              json={"usernames": [value], "excludeBannedUsers": False})
+        found = (r.json().get("data") or []) if r.status_code == 200 else []
+        if found:
+            return str(found[0]["id"])
+        if len(value) < 3:
+            return None
+        r = await client.get("https://users.roblox.com/v1/users/search", params={"keyword": value, "limit": 10})
+        rows = (r.json().get("data") or []) if r.status_code == 200 else []
+        exact = [u for u in rows if value.lower() in ((u.get("displayName") or "").lower(), (u.get("name") or "").lower())]
+        pick = (exact or rows or [None])[0]
+        return str(pick["id"]) if pick else None
+
     # ---- /pokedex
     @app_commands.command(name="pokedex", description=N_("מידע על פוקימון מהפוקידקס"))
     @app_commands.allowed_installs(guilds=True, users=True)
     @app_commands.allowed_contexts(**EVERYWHERE)
-    @app_commands.describe(pokemon=N_("מספר בפוקידקס או שם הפוקימון"))
+    @app_commands.describe(pokemon=N_("שם הפוקימון (באנגלית) או המספר שלו בפוקידקס"))
     async def pokedex(self, interaction: discord.Interaction, pokemon: app_commands.Range[str, 1, 40]):
         if not await self._allowed(interaction, "pokedex"):
             return
         lang = self._lang(interaction)
-        query = pokemon.strip().lower().lstrip("#").replace(" ", "-")
-        query = str(int(query)) if query.isdigit() else query
+        query = pokemon_slug(pokemon)
         await interaction.response.defer(thinking=True)
         try:
             async with httpx.AsyncClient(timeout=15, headers=HTTP_HEADERS) as client:
-                r = await client.get(f"https://pokeapi.co/api/v2/pokemon/{query}")
-                if r.status_code != 200:
+                found = await self._find_pokemon(client, query)
+                if not found:
                     return await interaction.followup.send(tr("לא נמצא פוקימון בשם או במספר {name}.", lang, name=pokemon))
-                p = r.json()
-                s = await client.get(p["species"]["url"])
-                species = s.json() if s.status_code == 200 else {}
-        except httpx.HTTPError:
+                p, species = found
+        except (httpx.HTTPError, ValueError):
             return await interaction.followup.send(tr("שירות הפוקידקס לא עונה כרגע. נסה שוב עוד מעט.", lang))
 
         def english(entries, key):
@@ -610,6 +706,88 @@ class Tools(commands.Cog):
                         if number <= 1025 else art)
         embed.set_footer(text="pokemon.com · PokéAPI")
         await interaction.followup.send(embed=embed)
+
+    async def _find_pokemon(self, client: httpx.AsyncClient, query: str):
+        """A name or number -> (pokemon, species). Pokémon with several forms (Deoxys, Giratina, Mimikyu...) are
+        looked up through their species, which points to the default form."""
+        species = None
+        r = await client.get(f"https://pokeapi.co/api/v2/pokemon/{query}")
+        if r.status_code != 200:
+            s = await client.get(f"https://pokeapi.co/api/v2/pokemon-species/{query}")
+            if s.status_code != 200:
+                close = [n for _, n in self.pokemon_names if n.startswith(query)] if query and not query.isdigit() else []
+                if len(close) != 1:
+                    return None
+                s = await client.get(f"https://pokeapi.co/api/v2/pokemon-species/{close[0]}")
+                if s.status_code != 200:
+                    return None
+            species = s.json()
+            default = next((v["pokemon"]["name"] for v in species.get("varieties", []) if v.get("is_default")), None)
+            if not default:
+                return None
+            r = await client.get(f"https://pokeapi.co/api/v2/pokemon/{default}")
+            if r.status_code != 200:
+                return None
+        p = r.json()
+        if species is None:
+            s = await client.get(p["species"]["url"])
+            species = s.json() if s.status_code == 200 else {}
+        return p, species
+
+    @pokedex.autocomplete("pokemon")
+    async def pokedex_autocomplete(self, interaction: discord.Interaction, current: str):
+        q = pokemon_slug(current) if current else ""
+        if q.isdigit():
+            rows = [(n, name) for n, name in self.pokemon_names if str(n).startswith(q)]
+        else:
+            starts = [(n, name) for n, name in self.pokemon_names if name.startswith(q)]
+            rows = starts + [(n, name) for n, name in self.pokemon_names if q in name and (n, name) not in starts]
+        return [app_commands.Choice(name=f"#{n:04d} {name.replace('-', ' ').title()}", value=name) for n, name in rows[:25]]
+
+    # ---- /clear
+    @app_commands.command(name="clear", description=N_("מחיקת ההודעות האחרונות של הבוט בערוץ הזה"))
+    @app_commands.allowed_installs(guilds=True, users=False)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=False)
+    @app_commands.default_permissions(manage_messages=True)
+    @app_commands.describe(amount=N_("כמה הודעות של הבוט למחוק (1 עד 100)"))
+    async def clear(self, interaction: discord.Interaction, amount: app_commands.Range[int, 1, 100]):
+        if not await self._allowed(interaction, "clear"):
+            return
+        lang = self._lang(interaction)
+        channel = interaction.channel
+        if interaction.guild is None:
+            channel = interaction.user.dm_channel or await interaction.user.create_dm()
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        me = self.bot.user
+        perms = channel.permissions_for(interaction.guild.me) if interaction.guild else None
+        if perms is not None and not perms.read_message_history:
+            return await interaction.followup.send(tr("אין לבוט הרשאה לקרוא את היסטוריית הערוץ הזה.", lang), ephemeral=True)
+        mine = []
+        try:
+            async for message in channel.history(limit=min(1000, amount * 25)):
+                if message.author.id == me.id:
+                    mine.append(message)
+                    if len(mine) >= amount:
+                        break
+        except discord.HTTPException:
+            return await interaction.followup.send(tr("אין לבוט הרשאה לקרוא את היסטוריית הערוץ הזה.", lang), ephemeral=True)
+        deleted = 0
+        recent = [m for m in mine if (discord.utils.utcnow() - m.created_at).days < 13]
+        if perms is not None and perms.manage_messages and len(recent) > 1:
+            for i in range(0, len(recent), 100):  # fast: many at once
+                try:
+                    await channel.delete_messages(recent[i:i + 100])
+                    deleted += len(recent[i:i + 100])
+                except discord.HTTPException:
+                    pass
+            mine = [m for m in mine if m not in recent]
+        for message in mine:  # one by one (always allowed for the bot's own messages)
+            try:
+                await message.delete()
+                deleted += 1
+            except discord.HTTPException:
+                pass
+        await interaction.followup.send(tr("נמחקו {count} הודעות של הבוט.", lang, count=deleted), ephemeral=True)
 
     # ---- /morse and /binary
     @app_commands.command(name="morse", description=N_("תרגום טקסט לקוד מורס (או ממורס לטקסט)"))
@@ -687,43 +865,122 @@ class Tools(commands.Cog):
         await interaction.response.send_message(embed=embed, file=discord.File(io.BytesIO(png), "qr.png"))
 
     # ---- /gif
-    @app_commands.command(name="gif", description=N_("הפיכת סרטון (MP4 ועוד) ל-GIF"))
+    @app_commands.command(name="gif", description=N_("הפיכת סרטון או תמונה ל-GIF"))
     @app_commands.allowed_installs(guilds=True, users=True)
     @app_commands.allowed_contexts(**EVERYWHERE)
-    @app_commands.describe(video=N_("קובץ הסרטון"), width=N_("רוחב ה-GIF בפיקסלים (ברירת מחדל 480)"),
+    @app_commands.describe(video=N_("הקובץ (בלי קובץ: הסרטון או התמונה האחרונים בערוץ)"),
+                           width=N_("רוחב ה-GIF בפיקסלים (ברירת מחדל 480)"),
                            fps=N_("פריימים בשנייה (ברירת מחדל 12)"), seconds=N_("כמה שניות מתחילת הסרטון (ברירת מחדל 8)"))
-    async def gif(self, interaction: discord.Interaction, video: discord.Attachment,
+    async def gif(self, interaction: discord.Interaction, video: discord.Attachment | None = None,
                   width: app_commands.Range[int, 120, 800] = 480, fps: app_commands.Range[int, 5, 30] = 12,
                   seconds: app_commands.Range[int, 1, 20] = 8):
         if not await self._allowed(interaction, "gif"):
             return
         lang = self._lang(interaction)
-        ctype = (video.content_type or "").lower()
-        if not ctype.startswith(VIDEO_TYPES) and not video.filename.lower().endswith((".mp4", ".mov", ".webm", ".mkv", ".avi", ".gif")):
-            return await interaction.response.send_message(tr("זה לא קובץ וידאו. צרף קובץ MP4, MOV או WEBM.", lang), ephemeral=True)
-        if video.size > MAX_VIDEO_BYTES:
+        if video is None:  # no file: use the newest video or picture in this channel
+            video = await self._recent_media(interaction.channel)
+            if video is None:
+                return await interaction.response.send_message(
+                    tr("לא מצאתי סרטון או תמונה בהודעות האחרונות. צרף קובץ, או לחץ קליק ימני על ההודעה > Apps > Make GIF.", lang),
+                    ephemeral=True)
+        await self._gif_reply(interaction, lang, video, width, fps, seconds)
+
+    async def gif_from_message(self, interaction: discord.Interaction, message: discord.Message):
+        """Right click on a message > Apps > Make GIF."""
+        if not await self._allowed(interaction, "gif"):
+            return
+        lang = self._lang(interaction)
+        media = media_of(message)
+        if media is None:
+            return await interaction.response.send_message(tr("בהודעה הזו אין סרטון או תמונה.", lang), ephemeral=True)
+        await self._gif_reply(interaction, lang, media, 480, 12, 8)
+
+    async def _recent_media(self, channel):
+        try:
+            async for message in channel.history(limit=30):
+                media = media_of(message)
+                if media is not None:
+                    return media
+        except (discord.HTTPException, AttributeError):
+            return None
+        return None
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        """Replying '!gif' (or '/gif' sent as text) to a message with a video or picture turns it into a GIF."""
+        if message.author.bot or message.reference is None or message.content.strip().lower() not in GIF_REPLY_WORDS:
+            return
+        if message.guild is not None:
+            cfg = self.bot.cfg(message.guild, "tools")
+            if not cfg or not cfg.get("gif", True):
+                return
+        lang = self.bot.lang(message.guild) if message.guild else ui_lang()
+        target = message.reference.resolved
+        if not isinstance(target, discord.Message):
+            try:
+                target = await message.channel.fetch_message(message.reference.message_id)
+            except discord.HTTPException:
+                return
+        media = media_of(target)
+        if media is None:
+            return await message.reply(tr("בהודעה הזו אין סרטון או תמונה.", lang), mention_author=False)
+        async with message.channel.typing():
+            result = await self._make_gif(media, 480, 12, 8)
+        if isinstance(result, str):
+            return await message.reply(tr(result, lang), mention_author=False)
+        path, name, tmp = result
+        try:
+            await message.reply(file=discord.File(path, name), mention_author=False)
+        finally:
+            tmp.cleanup()
+
+    async def _gif_reply(self, interaction, lang, media, width, fps, seconds) -> None:
+        if media.size > MAX_VIDEO_BYTES:
             return await interaction.response.send_message(tr("הסרטון גדול מדי (עד 50MB).", lang), ephemeral=True)
-        ffmpeg = find_ffmpeg()
-        if not ffmpeg:
+        if not find_ffmpeg():
             log.warning(tr("ffmpeg לא נמצא: /gif צריך אותו. מתקינים עם הפקודה winget install ffmpeg"))
             return await interaction.response.send_message(
                 tr("כדי להפוך סרטונים ל-GIF, מי שמריץ את הבוט צריך להתקין ffmpeg (בחלון PowerShell: winget install ffmpeg) ולהפעיל את הבוט מחדש.", lang),
                 ephemeral=True)
         await interaction.response.defer(thinking=True)
-        with tempfile.TemporaryDirectory(prefix="botd-gif-") as tmp:
-            src, dst = Path(tmp) / "in.bin", Path(tmp) / "out.gif"
-            await video.save(src)
-            size_try = width
-            for _ in range(3):  # if the GIF is too big for Discord, make it smaller and try again
-                try:
-                    await video_to_gif(ffmpeg, src, dst, size_try, fps, seconds)
-                except RuntimeError as exc:
-                    log.warning("gif conversion failed: %s", exc)
-                    return await interaction.followup.send(tr("לא הצלחתי להמיר את הסרטון ל-GIF.", lang))
-                if dst.stat().st_size <= MAX_GIF_BYTES:
-                    break
-                size_try = max(120, int(size_try * 0.7))
+        result = await self._make_gif(media, width, fps, seconds)
+        if isinstance(result, str):
+            return await interaction.followup.send(tr(result, lang))
+        path, name, tmp = result
+        try:
+            await interaction.followup.send(file=discord.File(path, name))
+        finally:
+            tmp.cleanup()
+
+    async def _make_gif(self, media, width: int, fps: int, seconds: int):
+        """Video or picture -> (gif path, file name, temp dir to clean up), or an error message (Hebrew source text)."""
+        ffmpeg = find_ffmpeg()
+        if not ffmpeg:
+            return N_("כדי להפוך סרטונים ל-GIF, מי שמריץ את הבוט צריך להתקין ffmpeg (בחלון PowerShell: winget install ffmpeg) ולהפעיל את הבוט מחדש.")
+        if media.size > MAX_VIDEO_BYTES:
+            return N_("הסרטון גדול מדי (עד 50MB).")
+        tmp = tempfile.TemporaryDirectory(prefix="botd-gif-")
+        suffix = Path(media.filename).suffix.lower() or ".bin"
+        src, dst = Path(tmp.name) / f"in{suffix}", Path(tmp.name) / "out.gif"
+        try:
+            await media.save(src)
+            is_picture = (media.content_type or "").startswith("image/") or suffix in (".png", ".jpg", ".jpeg", ".webp")
+            if is_picture and suffix != ".gif" and not (media.content_type or "").startswith("image/gif"):
+                out = await images.convert(ffmpeg, src, "gif", Path(tmp.name))
+                dst = out
             else:
-                return await interaction.followup.send(tr("ה-GIF יצא גדול מדי לדיסקורד. נסה פחות שניות או רוחב קטן יותר.", lang))
-            name = Path(video.filename).stem[:60] or "video"
-            await interaction.followup.send(file=discord.File(dst, f"{name}.gif"))
+                size_try = width
+                for _ in range(3):  # if the GIF is too big for Discord, make it smaller and try again
+                    await video_to_gif(ffmpeg, src, dst, size_try, fps, seconds)
+                    if dst.stat().st_size <= MAX_GIF_BYTES:
+                        break
+                    size_try = max(120, int(size_try * 0.7))
+            if dst.stat().st_size > MAX_GIF_BYTES:
+                tmp.cleanup()
+                return N_("ה-GIF יצא גדול מדי לדיסקורד. נסה פחות שניות או רוחב קטן יותר.")
+        except (RuntimeError, images.ImageError, discord.HTTPException) as exc:
+            log.warning("gif conversion failed: %s", exc)
+            tmp.cleanup()
+            return N_("לא הצלחתי להמיר את הסרטון ל-GIF.")
+        name = re.sub(r"[^\w.-]", "_", Path(media.filename).stem)[:60] or "video"
+        return dst, f"{name}.gif", tmp

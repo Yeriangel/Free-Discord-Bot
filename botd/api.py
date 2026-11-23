@@ -392,6 +392,19 @@ def create_app(
             if resp.status_code != 200:
                 raise err(401, tr("Twitch דחה את הפרטים"))
             return {"ok": True, "message": tr("הפרטים של Twitch תקינים")}
+        if name == "roblox_api_key":
+            import httpx
+
+            key = secrets_store.get("roblox_api_key")
+            if not key:
+                raise err(400, tr("לא הוגדר מפתח"))
+            async with httpx.AsyncClient(timeout=15) as client:  # asset 1818 is a public Roblox place
+                resp = await client.get("https://apis.roblox.com/asset-delivery-api/v1/assetId/1818", headers={"x-api-key": key})
+            if resp.status_code in (401, 403):
+                raise err(401, tr("רובלוקס דחה את המפתח. בדוק שיש לו הרשאת legacy-asset:manage."))
+            if resp.status_code != 200:
+                raise err(502, tr("רובלוקס החזיר שגיאה: {error}", error=resp.status_code))
+            return {"ok": True, "message": tr("המפתח תקין")}
         raise err(404, tr("סוד לא מוכר"))
 
     # ---- bot profile (name / avatar) ------------------------------------

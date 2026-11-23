@@ -249,7 +249,7 @@ def test_time_zones_and_parsing():
         assert wintz.search("jerusalem")[0][1] == "Israel Standard Time"
         assert tools.event_time("21:00", "Israel Standard Time", "24/12/2026")[0] == 1798138800  # 19:00 UTC
         assert tools.event_time("9pm", "jerusalem", "1/7/2027")[0] == 1814464800  # summer: 18:00 UTC
-        assert "Israel (UTC+02:00)" == tools.event_time("21:00", "Israel Standard Time", "24/12/2026")[1]
+        assert tools.event_time("21:00", "Israel Standard Time", "24/12/2026")[1] in ("Jerusalem (UTC+02:00)", "Israel (UTC+02:00)")
     # fixed offsets work everywhere
     assert wintz.parse_offset("GMT+3") == 180 and wintz.parse_offset("utc-5:30") == -330 and wintz.parse_offset("+15") is None
     assert tools.event_time("10:00", "GMT+3", "1/1/2027")[:2] == (1798786800, "UTC+03:00")  # 07:00 UTC
@@ -274,10 +274,57 @@ def test_roblox_template_id():
     assert tools.template_id("<roblox></roblox>") is None
 
 
+def test_name_lookups_and_gif_sources():
+    from unittest.mock import MagicMock
+
+    from botd import roblox_assets
+
+    assert tools.pokemon_slug("Mr. Mime") == "mr-mime" and tools.pokemon_slug("Farfetch'd") == "farfetchd"
+    assert tools.pokemon_slug("Nidoran♀") == "nidoran-f" and tools.pokemon_slug("#025") == "25"
+    assert tools.pokemon_slug("Tapu Koko") == "tapu-koko"
+    assert tools.roblox_query("https://www.roblox.com/users/156/profile") == ("id", "156")
+    assert tools.roblox_query("@Builderman ") == ("name", "Builderman") and tools.roblox_query("156") == ("id", "156")
+    # links inside Roblox files: XML, and binary files with LZ4-compressed chunks
+    assert roblox_assets.linked_asset_id(b"<url>http://www.roblox.com/asset/?id=987654</url>") == "987654"
+    raw = b"PROP....ShirtTemplate rbxassetid://123456789 more"
+    literal = bytes([len(raw) << 4 if len(raw) < 15 else 0xF0]) + (bytes([len(raw) - 15]) if len(raw) >= 15 else b"") + raw
+    chunk = b"PROP" + __import__("struct").pack("<II", len(literal), len(raw)) + b"\x00" * 4 + literal
+    binary = b"<roblox!" + b"\x00" * 24 + chunk + b"END\x00" + b"\x00" * 12
+    assert roblox_assets.lz4_block(literal, len(raw)) == raw
+    assert roblox_assets.linked_asset_id(binary) == "123456789"
+    # LZ4 back-references ("abcabcabc...")
+    assert roblox_assets.lz4_block(bytes([0x35]) + b"abc" + bytes([3, 0]), 12) == b"abcabcabcabc"
+    # which attachment is used for a GIF
+    msg = MagicMock()
+    a, b = MagicMock(), MagicMock()
+    a.content_type, a.filename = "text/plain", "notes.txt"
+    b.content_type, b.filename = None, "clip.MP4"
+    msg.attachments = [a, b]
+    assert tools.media_of(msg) is b
+    msg.attachments = [a]
+    assert tools.media_of(msg) is None
+
+
+def test_english_time_zone_names():
+    import re
+
+    from botd import wintz
+
+    if not wintz.zones():
+        return
+    labels = [name for name, _ in wintz.search("", 200)]
+    assert not [n for n in labels if re.search("[\u0590-\u05ff\u0600-\u06ff\u0400-\u04ff]", n)], "time zones must be English"
+    assert wintz.search("jerusalem")[0][1] == "Israel Standard Time"
+    assert tools.event_time("21:00", "Israel Standard Time", "24/12/2026")[1].endswith("(UTC+02:00)")
+
+
 def test_commands_install_everywhere():
     names = {c.name: c for c in tools.Tools.__cog_app_commands__}
-    assert set(names) == {"roblox-user", "pokedex", "morse", "binary", "qr", "gif", "opacity", "file-format", "seed", "pfp", "time", "roblox-cloth"}
+    assert set(names) == {"roblox-user", "pokedex", "morse", "binary", "qr", "gif", "opacity", "file-format", "seed", "pfp", "time", "roblox-cloth", "clear"}
     for c in names.values():
+        if c.name == "clear":  # deletes the bot's own messages: only where the bot itself is
+            assert c.allowed_installs.guild and not c.allowed_installs.user
+            continue
         assert c.allowed_installs.guild and c.allowed_installs.user, c.name
         assert c.allowed_contexts.guild and c.allowed_contexts.dm_channel and c.allowed_contexts.private_channel, c.name
 

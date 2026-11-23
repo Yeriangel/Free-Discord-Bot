@@ -46,6 +46,56 @@ def _unpack(tzi: bytes):
 
 
 @lru_cache(maxsize=1)
+def _english_names() -> dict[str, str]:
+    """Windows zone key -> its English display name ('(UTC+02:00) Jerusalem'), read from Windows' English
+    resources (tzres.dll.mui). Empty when Windows has no English resources."""
+    import ctypes
+    import os
+    from ctypes import wintypes
+
+    try:
+        import winreg
+    except ImportError:
+        return {}
+    path = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "en-US", "tzres.dll.mui")
+    if not os.path.exists(path):
+        return {}
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32.LoadLibraryExW.restype = wintypes.HMODULE
+    kernel32.LoadLibraryExW.argtypes = [wintypes.LPCWSTR, wintypes.HANDLE, wintypes.DWORD]
+    user32.LoadStringW.argtypes = [wintypes.HMODULE, wintypes.UINT, wintypes.LPWSTR, ctypes.c_int]
+    kernel32.FreeLibrary.argtypes = [wintypes.HMODULE]
+    handle = kernel32.LoadLibraryExW(path, None, 0x00000002 | 0x00000020)  # as data file / image resource
+    if not handle:
+        return {}
+    out = {}
+    try:
+        root = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, KEY)
+        for i in range(winreg.QueryInfoKey(root)[0]):
+            name = winreg.EnumKey(root, i)
+            try:
+                mui = winreg.QueryValueEx(winreg.OpenKey(root, name), "MUI_Display")[0]
+                buf = ctypes.create_unicode_buffer(256)
+                if user32.LoadStringW(handle, int(mui.rsplit(",-", 1)[1]), buf, 256):
+                    out[name] = buf.value
+            except (OSError, ValueError, IndexError):
+                continue
+    finally:
+        kernel32.FreeLibrary(handle)
+    return out
+
+
+def english_city(zone: str) -> str:
+    """The English place names of a zone ('Jerusalem', 'Eastern Time (US & Canada)'), or '' if unknown."""
+    display = _english_names().get(zone, "")
+    if display:
+        return re.sub(r"^\(UTC[^)]*\)\s*", "", display)
+    cities = [c.title() for c, z in CITIES.items() if z == zone and c not in ("utc", "gmt")]
+    return ", ".join(cities[:3])
+
+
+@lru_cache(maxsize=1)
 def zones() -> dict[str, dict]:
     """Windows zone key -> {display, tzi, dynamic: {year: tzi}}. Empty when not on Windows."""
     try:
@@ -137,9 +187,9 @@ def label(zone: str, now: dt.datetime | None = None) -> str:
     local_guess = utc_now + dt.timedelta(minutes=-(_unpack(info["tzi"])[0]))
     offset = utc_offset_minutes(zone, local_guess)
     short = zone.replace(" Standard Time", "")
-    city = re.sub(r"^\(UTC[^)]*\)\s*", "", info["display"])
-    text = f"({fmt_offset(offset)}) {short}"
-    return (text + (f" · {city}" if city and city.lower() != short.lower() else ""))[:100]
+    city = english_city(zone)
+    text = f"({fmt_offset(offset)}) {city or short}"
+    return text[:100]
 
 
 def search(query: str, limit: int = 25) -> list[tuple[str, str]]:
@@ -153,11 +203,12 @@ def search(query: str, limit: int = 25) -> list[tuple[str, str]]:
     for city, zone in CITIES.items():
         if q and q in city and zone in zones() and zone not in seen:
             seen.add(zone)
-            results.append((f"{city.title()} — {label(zone)}"[:100], zone))
+            text = label(zone)
+            results.append(((text if city in text.lower() else f"{city.title()} — {text}")[:100], zone))
     for zone, info in sorted(zones().items(), key=lambda z: _unpack(z[1]["tzi"])[0], reverse=True):
         if zone in seen:
             continue
-        if not q or q in zone.lower() or q in info["display"].lower():
+        if not q or q in zone.lower() or q in english_city(zone).lower() or q in info["display"].lower():
             seen.add(zone)
             results.append((label(zone), zone))
         if len(results) >= limit:
