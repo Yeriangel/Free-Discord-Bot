@@ -293,6 +293,8 @@ class BotManager:
                 if not r.is_default() and not r.managed
             ],
             "bot_permissions": [k for k in catalog.PERM_BITS if getattr(perms, k, False)],
+            "emojis": [{"id": str(e.id), "name": e.name, "animated": e.animated, "text": str(e), "url": str(e.url)}
+                       for e in guild.emojis if e.available][:200],
         }
 
     # ---- presence (status + activity) -------------------------------------

@@ -74,13 +74,18 @@ class ConfigIn(BaseModel):
 
 
 class RRPair(BaseModel):
-    emoji: str
+    emoji: str = ""
+    label: str = ""
     role_id: str
 
 
 class ReactionRoleIn(BaseModel):
     channel_id: str
     content: str = ""
+    title: str = ""
+    color: str = ""
+    style: str = "text"      # text | embed
+    mode: str = "reactions"  # reactions | buttons
     pairs: list[RRPair]
 
 
@@ -623,8 +628,28 @@ def create_app(
         guild = manager.live_guild(gid)
         if guild is None:
             raise err(409, tr("הבוט לא נמצא בשרת הזה"))
+        data = body.model_dump()
         try:
-            await cog.publish(guild, body.channel_id, body.content, [p.model_dump() for p in body.pairs])
+            await cog.publish(guild, data.pop("channel_id"), **data)
+        except ValueError as exc:
+            raise err(400, str(exc))
+        except discord.HTTPException as exc:
+            raise err(502, tr("דיסקורד דחה את הבקשה: {message}", message=exc.text or exc.status))
+        return _guild_view(gid)
+
+    @app.put("/api/guilds/{gid}/reaction-roles/{message_id}")
+    async def edit_reaction_roles(gid: str, message_id: str, body: ReactionRoleIn):
+        """Edits a posted reaction-roles group, and its message in Discord."""
+        _guild_or_404(gid)
+        cog = _rr_cog(gid)
+        guild = manager.live_guild(gid)
+        if guild is None:
+            raise err(409, tr("הבוט לא נמצא בשרת הזה"))
+        data = body.model_dump()
+        try:
+            await cog.update(guild, message_id, data.pop("channel_id"), data)
+        except KeyError:
+            raise err(404, tr("ההודעה לא נמצאה"))
         except ValueError as exc:
             raise err(400, str(exc))
         except discord.HTTPException as exc:

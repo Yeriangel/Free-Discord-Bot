@@ -376,6 +376,82 @@ def test_ai_member_tools():
                                                            {"scope": "channel", "include_bots": True}, channel)
 
 
+def test_reaction_roles_embed_buttons_and_edit():
+    """Reaction roles: embed + buttons, server emojis by name, editing a posted message, and button clicks."""
+    import asyncio
+    import tempfile
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from botd.modules import reaction_roles as rr
+
+    store = Store(Path(tempfile.mkdtemp()) / "rr.sqlite3")
+    store.upsert_guild(GID, "G")
+    bot = MagicMock()
+    bot.store = store
+    bot.lang = lambda g: "en"
+    bot.cfg = lambda g, k: {"_lang": "en"}
+    cog = rr.ReactionRoles(bot)
+    role_a = MagicMock(id=111, mention="<@&111>")
+    role_a.name = "Jewish"
+    role_b = MagicMock(id=222, mention="<@&222>")
+    role_b.name = "Other"
+    custom = MagicMock(available=True, animated=False)
+    custom.name = "star_of_david"
+    custom.__str__ = lambda self: "<:star_of_david:999>"
+    message = MagicMock(id=555)
+    message.edit = AsyncMock()
+    message.add_reaction = AsyncMock()
+    message.clear_reaction = AsyncMock()
+    channel = MagicMock(id=777)
+    channel.name = "roles"
+    channel.permissions_for.return_value = SimpleNamespace(send_messages=True, read_message_history=True, add_reactions=True)
+    channel.send = AsyncMock(return_value=message)
+    channel.fetch_message = AsyncMock(return_value=message)
+    guild = MagicMock(id=int(GID), emojis=[custom])
+    guild.get_role = lambda i: {111: role_a, 222: role_b}.get(i)
+
+    with patch.object(rr, "text_channel", lambda g, cid: channel), patch.object(rr, "can_manage_role", lambda g, r: True):
+        group = asyncio.run(cog.publish(guild, "777", content="", title="Religion?", style="embed", mode="buttons",
+                                        color="#5865F2", pairs=[{"emoji": ":star_of_david:", "role_id": "111"},
+                                                                {"emoji": "", "label": "Other", "role_id": "222"}]))
+        sent = channel.send.call_args.kwargs
+        assert sent["embed"].title == "Religion?" and sent["content"] is None
+        buttons = sent["view"].children
+        assert [b.custom_id for b in buttons] == ["rr:111", "rr:222"] and buttons[1].label == "Other"
+        assert group["pairs"][0]["emoji"] == "<:star_of_david:999>"  # server emoji found by its name
+        message.add_reaction.assert_not_called()  # buttons: no reactions
+        # edit: switch to plain text with reactions, keep the same message
+        asyncio.run(cog.update(guild, "555", "777", {"style": "text", "mode": "reactions", "title": "Pick one", "content": "",
+                                                    "pairs": [{"emoji": "✅", "role_id": "111"}]}))
+        edited = message.edit.call_args.kwargs
+        assert edited["embed"] is None and edited["view"] is None and edited["content"].startswith("**Pick one**")
+        message.add_reaction.assert_called_with("✅")
+        saved = store.raw_config(GID, "reaction_roles")["groups"]
+        assert len(saved) == 1 and saved[0]["mode"] == "reactions" and saved[0]["message_id"] == "555"
+        # a half-filled row is refused
+        try:
+            asyncio.run(cog.update(guild, "555", "777", {"pairs": [{"emoji": "", "role_id": "111"}]}))
+            raise AssertionError("should fail")
+        except ValueError:
+            pass
+
+    # clicking a button toggles the role
+    member = MagicMock(roles=[])
+    member.add_roles = AsyncMock()
+    member.remove_roles = AsyncMock()
+    inter = MagicMock(type=rr.discord.InteractionType.component, data={"custom_id": "rr:111"}, guild=guild)
+    inter.response.send_message = AsyncMock()
+    inter.user = member
+    with patch.object(rr, "can_manage_role", lambda g, r: True), patch.object(rr.discord, "Member", type(member)):
+        asyncio.run(cog.on_interaction(inter))
+        member.add_roles.assert_called_once()
+        member.roles = [role_a]
+        asyncio.run(cog.on_interaction(inter))
+        member.remove_roles.assert_called_once()  # second click takes it away
+    print("ok reaction roles: embed, buttons, server emoji, edit, toggle")
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

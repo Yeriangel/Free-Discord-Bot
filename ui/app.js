@@ -117,13 +117,13 @@ function toast(message, kind = "") {
   setTimeout(() => el.remove(), kind === "error" ? 7000 : 3500);
 }
 
-function confirmDialog(title, body, okLabel = "אישור", danger = true, checkLabel = "") {
+function confirmDialog(title, body, okLabel = "אישור", danger = true, checkLabel = "", checkedByDefault = false) {
   return new Promise((resolve) => {
     const modal = $("#modal");
     $("#modal-title").textContent = title;
     $("#modal-body").textContent = body;
     const checkRow = $("#modal-check-row"), check = $("#modal-check");
-    check.checked = false;
+    check.checked = !!checkedByDefault;
     checkRow.classList.toggle("hidden", !checkLabel);
     $("#modal-check-label").textContent = checkLabel;
     const ok = $("#modal-ok");
@@ -960,12 +960,50 @@ function listRow(f, item, o) {
     </div>`;
 }
 
-function rrPairRow(objects) {
+const RR_EMOJIS = ["✅", "❌", "⭐", "🔥", "❤️", "💙", "💚", "💛", "💜", "🖤", "🤍", "🎮", "🎨", "🎵", "🎧", "📚", "💻", "⚽", "🏀",
+  "🎉", "🎁", "📢", "🔔", "🔒", "🛡️", "⚔️", "👑", "💎", "🌙", "☀️", "🌈", "🍕", "🐶", "🐱", "👍", "👎", "😀", "😎", "🤖", "👻",
+  "✡️", "✝️", "☪️", "🕉️", "☸️", "🧪", "🇮🇱", "🇺🇸", "🇬🇧", "🇷🇺", "🇸🇦", "♂️", "♀️", "⚧️", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"];
+
+function rrPairRow(objects, p = {}) {
   return `<div class="rr-pair">
-      <input type="text" class="rr-emoji" placeholder="😀" maxlength="64">
-      ${rolePicker('class="rr-role"', "", objects)}
+      <div class="rr-emoji-wrap">
+        <input type="text" class="rr-emoji" placeholder="😀" maxlength="80" value="${esc(p.emoji || "")}">
+        <button class="btn btn-sm btn-ghost" data-action="rr-emoji-pick" title="${esc(t("בחר אימוג'י"))}">😀▾</button>
+      </div>
+      <input type="text" class="rr-label" placeholder="${esc(t("טקסט בכפתור (לא חובה)"))}" maxlength="80" value="${esc(p.label || "")}">
+      ${rolePicker('class="rr-role"', p.role_id || "", objects)}
       <button class="btn btn-sm btn-ghost" data-action="row-remove" title="הסר">✕</button>
     </div>`;
+}
+
+function rrEmojiPopup(anchor) {
+  document.querySelectorAll(".rr-emoji-popup").forEach((x) => x.remove());
+  const emojis = (S.guild.objects && S.guild.objects.emojis) || [];
+  const pop = document.createElement("div");
+  pop.className = "rr-emoji-popup card";
+  pop.innerHTML = (emojis.length ? `<div class="muted small">${esc(t("האימוג'ים של השרת"))}</div>
+      <div class="rr-emoji-grid">${emojis.map((e) => `<button class="rr-emo" data-emo="${esc(e.text)}" title=":${esc(e.name)}:"><img src="${esc(e.url)}" alt=""></button>`).join("")}</div>` : "")
+    + `<div class="muted small">${esc(t("אימוג'ים רגילים (אפשר גם להדביק כל אימוג'י)"))}</div>
+      <div class="rr-emoji-grid">${RR_EMOJIS.map((e) => `<button class="rr-emo" data-emo="${e}">${e}</button>`).join("")}</div>`;
+  anchor.closest(".rr-emoji-wrap").appendChild(pop);
+  pop.addEventListener("click", (ev) => {
+    const b = ev.target.closest("[data-emo]");
+    if (!b) return;
+    anchor.closest(".rr-emoji-wrap").querySelector(".rr-emoji").value = b.dataset.emo;
+    pop.remove();
+  });
+  setTimeout(() => document.addEventListener("click", function off(ev) {
+    if (!pop.contains(ev.target) && ev.target !== anchor) { pop.remove(); document.removeEventListener("click", off); }
+  }), 0);
+}
+
+function readRrForm() {
+  const pairs = [...document.querySelectorAll("#rr-pairs .rr-pair")]
+    .map((r) => ({ emoji: r.querySelector(".rr-emoji").value.trim(), label: r.querySelector(".rr-label").value.trim(),
+                   role_id: r.querySelector(".rr-role").value }))
+    .filter((p) => p.emoji || p.label || p.role_id);
+  return { channel_id: $("#rr-channel").value, style: $("#rr-style").value, mode: $("#rr-mode").value,
+           title: $("#rr-title").value, color: $("#rr-color").value, content: $("#rr-content").value, pairs };
 }
 
 function renderField(f, value, g) {
@@ -1009,26 +1047,44 @@ function renderField(f, value, g) {
 
 function viewReactionRoles(groups, g) {
   const o = g.objects;
+  const editing = S.rrEdit && groups.find((x) => x.message_id === S.rrEdit);
   const existing = groups.length ? groups.map((grp) => `
-      <div class="rr-group">
+      <div class="rr-group ${editing && grp.message_id === editing.message_id ? "rr-editing" : ""}">
         <div class="grow">
           <div><b># ${esc(grp.channel_name || grp.channel_id)}</b>
+            ${grp.title ? ` · <span class="no-translate">${esc(grp.title)}</span>` : ""}
+            · <span class="muted small">${esc(t(grp.mode === "buttons" ? "כפתורים" : "ריאקשנים"))}${grp.style === "embed" ? " · Embed" : ""}</span>
             · <a href="https://discord.com/channels/${esc(g.id)}/${esc(grp.channel_id)}/${esc(grp.message_id)}" target="_blank" rel="noopener">להודעה</a></div>
-          <div class="module-perms">${grp.pairs.map((p) => `<span class="badge">${esc(p.emoji)} → @${esc(p.role_name || p.role_id)}</span>`).join("")}</div>
+          <div class="module-perms">${grp.pairs.map((p) => `<span class="badge">${esc(p.emoji || "")}${p.label ? " " + esc(p.label) : ""} → @${esc(p.role_name || p.role_id)}</span>`).join("")}</div>
         </div>
+        ${o ? `<button class="btn btn-sm" data-action="rr-edit" data-mid="${esc(grp.message_id)}">${esc(t("ערוך"))}</button>` : ""}
         <button class="btn btn-sm btn-ghost" data-action="rr-delete" data-mid="${esc(grp.message_id)}">הסר</button>
       </div>`).join("") : `<div class="muted small">עוד אין הודעות תפקידים.</div>`;
+  const d = editing || { channel_id: "", style: "embed", mode: "buttons", title: "", color: "#5865F2", content: "", pairs: [{}] };
   const form = o ? `
       <div class="rr-new">
-        <div class="section-title small-title">הודעה חדשה</div>
-        <div class="field"><span class="label">ערוץ</span>${channelPicker('id="rr-channel"', "", o, "בחר ערוץ")}</div>
-        <div class="field"><span class="label">טקסט ההודעה (לא חובה)</span><textarea id="rr-content" placeholder="ריק = רשימה אוטומטית של האימוג'ים והתפקידים"></textarea></div>
-        <span class="label">אימוג'י ← תפקיד</span>
-        <div id="rr-pairs">${rrPairRow(o)}</div>
+        <div class="section-title small-title">${esc(editing ? t("עריכת הודעת תפקידים") : t("הודעה חדשה"))}</div>
+        <div class="row" style="flex-wrap:wrap;align-items:flex-end">
+          <div class="field grow"><span class="label">ערוץ</span>${channelPicker('id="rr-channel"', d.channel_id || "", o, "בחר ערוץ")}</div>
+          <div class="field"><span class="label">${esc(t("סגנון"))}</span><select id="rr-style">
+            <option value="embed" ${d.style === "embed" ? "selected" : ""}>Embed</option>
+            <option value="text" ${d.style !== "embed" ? "selected" : ""}>${esc(t("טקסט רגיל"))}</option></select></div>
+          <div class="field"><span class="label">${esc(t("איך בוחרים"))}</span><select id="rr-mode">
+            <option value="buttons" ${d.mode === "buttons" ? "selected" : ""}>${esc(t("כפתורים"))}</option>
+            <option value="reactions" ${d.mode !== "buttons" ? "selected" : ""}>${esc(t("ריאקשנים"))}</option></select></div>
+          <div class="field"><span class="label">${esc(t("צבע"))}</span><input type="color" id="rr-color" value="${esc(d.color || "#5865F2")}"></div>
+        </div>
+        <div class="field"><span class="label">${esc(t("כותרת (לא חובה)"))}</span><input type="text" id="rr-title" maxlength="256" value="${esc(d.title || "")}" placeholder="${esc(t("למשל: דת?"))}"></div>
+        <div class="field"><span class="label">טקסט ההודעה (לא חובה)</span><textarea id="rr-content" placeholder="ריק = רשימה אוטומטית של האימוג'ים והתפקידים">${esc(d.content || "")}</textarea>
+          <span class="hint">${esc(t("אפשר אימוג'ים רגילים ושל השרת (בצורה :name:), ו-Markdown של דיסקורד."))}</span></div>
+        <span class="label">${esc(t("אימוג'י ← טקסט בכפתור ← תפקיד"))}</span>
+        <div id="rr-pairs">${(d.pairs && d.pairs.length ? d.pairs : [{}]).map((p) => rrPairRow(o, p)).join("")}</div>
         <div class="row" style="margin-top:8px">
           <button class="btn btn-sm" data-action="rr-add-pair">+ שורה</button>
           <div class="spacer"></div>
-          <button class="btn btn-primary" data-action="rr-publish">פרסם בדיסקורד</button>
+          ${editing ? `<button class="btn" data-action="rr-cancel">${esc(t("ביטול"))}</button>
+             <button class="btn btn-primary" data-action="rr-save" data-mid="${esc(editing.message_id)}">${esc(t("שמור ועדכן בדיסקורד"))}</button>`
+          : `<button class="btn btn-primary" data-action="rr-publish">פרסם בדיסקורד</button>`}
         </div>
       </div>` : `<div class="notice warn">כדי לפרסם הודעת תפקידים חדשה, הבוט צריך להיות מחובר.</div>`;
   return `<div class="field wide no-dirty">${existing}${form}</div>`;
@@ -1919,19 +1975,36 @@ const actions = {
     box.insertAdjacentHTML("beforeend", rrPairRow(S.guild.objects));
   },
   async "rr-publish"(btn) {
-    const pairs = [...document.querySelectorAll("#rr-pairs .rr-pair")]
-      .map((r) => ({ emoji: r.querySelector(".rr-emoji").value.trim(), role_id: r.querySelector(".rr-role").value }))
-      .filter((p) => p.emoji || p.role_id);
+    const data = readRrForm();
     await guarded(btn, async () => {
-      S.guild = await api("POST", `/guilds/${S.guildId}/reaction-roles`, { channel_id: $("#rr-channel").value, content: $("#rr-content").value, pairs });
+      S.guild = await api("POST", `/guilds/${S.guildId}/reaction-roles`, data);
       render();
       toast("ההודעה פורסמה בדיסקורד", "ok");
     });
   },
+  "rr-edit"(btn) {
+    S.rrEdit = btn.dataset.mid;
+    render();
+    const form = document.querySelector(".rr-new");
+    if (form) form.scrollIntoView({ behavior: "smooth", block: "start" });
+  },
+  "rr-cancel"() { S.rrEdit = null; render(); },
+  "rr-emoji-pick"(btn) { rrEmojiPopup(btn); },
+  async "rr-save"(btn) {
+    const data = readRrForm();
+    await guarded(btn, async () => {
+      S.guild = await api("PUT", `/guilds/${S.guildId}/reaction-roles/${btn.dataset.mid}`, data);
+      S.rrEdit = null;
+      render();
+      toast(t("ההודעה עודכנה בדיסקורד"), "ok");
+    });
+  },
   async "rr-delete"(btn) {
-    const res = await confirmDialog("להסיר את הודעת התפקידים?",
-      "הבוט יפסיק לתת תפקידים לפי הריאקשנים בהודעה הזו. תפקידים שכבר ניתנו נשארים.", "הסר", true, "למחוק גם את ההודעה מדיסקורד");
+    const res = await confirmDialog(t("להסיר את הודעת התפקידים?"),
+      t("הבוט יפסיק לתת תפקידים דרך ההודעה הזו. תפקידים שכבר ניתנו נשארים."), "הסר", true,
+      t("למחוק גם את ההודעה מהשרת בדיסקורד"), true);
     if (!res.ok) return;
+    if (S.rrEdit === btn.dataset.mid) S.rrEdit = null;
     await guarded(btn, async () => {
       S.guild = await api("DELETE", `/guilds/${S.guildId}/reaction-roles/${btn.dataset.mid}?delete_message=${res.checked}`);
       render();
