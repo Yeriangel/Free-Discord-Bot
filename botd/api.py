@@ -41,6 +41,8 @@ class SettingsIn(BaseModel):
     start_with_windows: bool | None = None
     appearance: dict | None = None
     creator_anonymous: bool | None = None
+    mobile_enabled: bool | None = None
+    mobile_port: int | None = None
 
 
 class ProfileIn(BaseModel):
@@ -126,6 +128,40 @@ def create_app(
     def token_ok(value: str | None) -> bool:
         return hmac.compare_digest((value or "").encode("utf-8", "replace"), token_bytes)
 
+    STANDBY_EVERY = int(__import__("os").environ.get("BOTD_STANDBY_EVERY") or 30)  # seconds between checks of the main computer
+    STANDBY_MISSES = 3  # this many failed checks in a row = the main computer is off
+
+    async def main_bot_online(url: str) -> bool | None:
+        """True / False = what the main computer says about its bot; None = the main computer does not answer."""
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(timeout=8) as client:
+                r = await client.get(f"{url}/api/ping")
+            return bool(r.json().get("bot_online")) if r.status_code == 200 else None
+        except (httpx.HTTPError, ValueError):
+            return None
+
+    async def standby_loop(url: str) -> None:
+        """Backup mode: start the bot here when the main computer's bot is off or unreachable, and stop it as soon as
+        the main computer's bot is back, so the same bot never answers twice for long."""
+        misses = 0
+        while True:
+            online = await main_bot_online(url)
+            running = manager.state in ("connecting", "connected", "reconnecting")
+            misses = misses + 1 if online is None else 0
+            main_off = online is False or misses >= STANDBY_MISSES
+            try:
+                if main_off and not running and secrets_store.get("bot_token"):
+                    log.info(tr("הבוט במחשב הראשי כבוי: מפעיל את הבוט כאן"))
+                    await manager.start()
+                elif online and running:
+                    log.info(tr("הבוט במחשב הראשי חזר: עוצר את הבוט כאן"))
+                    await manager.stop()
+            except Exception:  # noqa: BLE001 - keep watching
+                log.exception("standby")
+            await asyncio.sleep(STANDBY_EVERY)
+
     RESUME_KEY = "resume_bot_after_restart"
     RESUME_WINDOW = 90  # seconds: an update, restart or the launcher replacing an old version starts the next one at once
 
@@ -153,6 +189,11 @@ def create_app(
             store.set_kv(RESUME_KEY, 0)
         if resume:
             log.info(tr("הבוט רץ לפני העדכון, מפעיל אותו שוב"))
+        standby_url = os.environ.get("BOTD_STANDBY_URL", "").rstrip("/")
+        if standby_url:  # backup copy (a phone or second computer): the main computer decides, see standby_loop
+            autostart = resume = False
+            standby_task = asyncio.create_task(standby_loop(standby_url))
+            log.info(tr("מצב גיבוי: הבוט יעבוד כאן רק כשהבוט במחשב הראשי כבוי (%s)"), standby_url)
         if (autostart or resume) and secrets_store.get("bot_token"):
             try:
                 await manager.start()
@@ -165,8 +206,49 @@ def create_app(
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
+    import os as _os
+
+    from . import mobile as mobile_mod
+
+    phones = mobile_mod.MobileAccess(store)
+    phone_port = mobile_mod.mobile_port(store.get_settings()) if mobile_mod.enabled(store.get_settings()) else None
+    allow_loopback_phone = _os.environ.get("BOTD_MOBILE_TEST") == "1"  # tests only
+
+    def phone_client_ok(host: str | None) -> bool:
+        return mobile_mod.is_tailscale(host) or (allow_loopback_phone and host == "127.0.0.1")
+
+    def from_phone(scope) -> bool:
+        server = scope.get("server") or (None, None)
+        return phone_port is not None and server[1] == phone_port and phone_port != port
+
+    PHONE_OPEN = ("/api/mobile/claim", "/api/ping")
+
     @app.middleware("http")
     async def guard(request: Request, call_next):
+        if from_phone(request.scope):
+            if not phone_client_ok(request.client.host if request.client else None):
+                return JSONResponse({"detail": {"message": "only your Tailscale devices"}}, status_code=403)
+            path = request.url.path
+            if path.startswith("/api/"):
+                if path.startswith(mobile_mod.BLOCKED_FOR_PHONES):
+                    return JSONResponse({"detail": {"message": tr("את זה אפשר לעשות רק במחשב")}}, status_code=403)
+                if path not in PHONE_OPEN:
+                    device = phones.device_for(request.headers.get("x-session-token"))
+                    if device is None:
+                        return JSONResponse({"detail": {"message": "unauthorized"}}, status_code=401)
+                    if not device.get("verified") and path != "/api/mobile/discord":
+                        return JSONResponse({"detail": {"message": "discord login needed", "discord_login": True}}, status_code=401)
+                    request.state.device = device
+                    phones.touch(device["id"])
+            response = await call_next(request)
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["Referrer-Policy"] = "no-referrer"
+            host = request.headers.get("host", "")
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; "
+                f"connect-src 'self' ws://{host}; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+            return response
         # Blocks DNS-rebinding and any non-local origin.
         if request.headers.get("host") not in allowed_hosts:
             return JSONResponse({"detail": {"message": "host not allowed"}}, status_code=403)
@@ -187,7 +269,8 @@ def create_app(
     # ---- service ---------------------------------------------------------
     @app.get("/api/ping")
     async def ping():
-        return {"ok": True, "version": __version__, "build": BUILD}
+        return {"ok": True, "version": __version__, "build": BUILD,
+                "bot_online": manager.state in ("connecting", "connected", "reconnecting")}
 
     @app.post("/api/app/restart")
     async def restart_app():
@@ -553,6 +636,148 @@ def create_app(
         return {"url": url, "permissions_value": str(catalog.permissions_value(body.permissions))}
 
     # ---- guilds ----------------------------------------------------------
+    # ---- phone access (Android app) -------------------------------------------------------------
+    def _phone_base_url() -> str | None:
+        ip = _os.environ.get("BOTD_MOBILE_HOST") or mobile_mod.tailscale_ip()
+        settings = store.get_settings()
+        return f"http://{ip}:{mobile_mod.mobile_port(settings)}" if ip else None
+
+    @app.get("/api/mobile")
+    async def mobile_info():
+        settings = store.get_settings()
+        return {"enabled": mobile_mod.enabled(settings), "running": phone_port is not None,
+                "port": mobile_mod.mobile_port(settings), "tailscale_ip": await asyncio.to_thread(mobile_mod.tailscale_ip),
+                "devices": phones.public_devices(), "discord_redirect": mobile_mod.DISCORD_REDIRECT}
+
+    @app.post("/api/mobile/pair")
+    async def mobile_pair():
+        """A pairing code + QR for the phone (valid 10 minutes)."""
+        import base64
+
+        from . import qr
+
+        if phone_port is None:
+            raise err(409, tr("קודם הפעל גישה מהטלפון ולחץ 'החל עכשיו'."))
+        base = await asyncio.to_thread(_phone_base_url)
+        if not base:
+            raise err(409, tr("Tailscale לא פועל במחשב הזה. התקן אותו והתחבר, ואז נסה שוב."))
+        code = phones.new_code()
+        link = mobile_mod.pair_link(base, code)
+        png = qr.to_png(qr.encode(link), scale=6)
+        return {"code": code, "url": base, "link": link, "qr": "data:image/png;base64," + base64.b64encode(png).decode(),
+                "expires_in": mobile_mod.PAIR_CODE_SECONDS}
+
+    @app.delete("/api/mobile/devices/{device_id}")
+    async def mobile_remove(device_id: str):
+        if not phones.remove(device_id):
+            raise err(404, tr("הטלפון לא נמצא"))
+        log.info(tr("טלפון הוסר"))
+        return {"devices": phones.public_devices()}
+
+    @app.post("/api/mobile/claim")
+    async def mobile_claim(body: dict):
+        try:
+            token = phones.claim(str(body.get("code") or ""), str(body.get("name") or "Phone"))
+        except ValueError as exc:
+            raise err(400, str(exc))
+        return {"token": token, "client_id": await _client_id() if secrets_store.get("bot_token") else "",
+                "discord_redirect": mobile_mod.DISCORD_REDIRECT}
+
+    @app.post("/api/mobile/discord")
+    async def mobile_discord(request: Request, body: dict):
+        """The phone logged in with Discord: allowed only for the bot's owner or an allowed user."""
+        import httpx
+
+        from .store import allowed_user_ids
+
+        device = getattr(request.state, "device", None)
+        if device is None:
+            raise err(401, "unauthorized")
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get("https://discord.com/api/v10/users/@me",
+                                 headers={"Authorization": f"Bearer {body.get('access_token') or ''}"})
+        if r.status_code != 200:
+            raise err(401, tr("ההתחברות לדיסקורד נכשלה. נסה שוב."))
+        allowed = set(allowed_user_ids(store.get_settings()))
+        bot = manager.bot
+        if bot is not None and getattr(bot, "creator_id", None):
+            allowed.add(str(bot.creator_id))
+        try:
+            phones.verify(device["id"], r.json(), allowed)
+        except PermissionError as exc:
+            raise err(403, str(exc))
+        return {"ok": True}
+
+    # ---- Home panel: log in with Discord, see your servers ------------------------------------
+    login_flow = None
+
+    async def _client_id() -> str:
+        if getattr(manager, "app_id", ""):
+            return manager.app_id
+        try:
+            return str((await discord_rest.get_application(_require_token())).get("id") or "")
+        except discord_rest.DiscordAPIError as exc:
+            raise _discord_error(exc)
+
+    def _open_in_browser(url: str) -> None:
+        import webbrowser
+        from urllib.parse import urlparse
+
+        host = urlparse(url).hostname or ""
+        if urlparse(url).scheme != "https" or not (host == "discord.com" or host.endswith(".discord.com")):
+            raise err(400, tr("אפשר לפתוח רק קישורים של דיסקורד"))
+        webbrowser.open(url)
+
+    @app.get("/api/home")
+    async def get_home():
+        from . import discord_login
+
+        token = discord_login.load_login()
+        base = {"redirect_uri": discord_login.REDIRECT_URI, "client_id": await _client_id() if secrets_store.get("bot_token") else ""}
+        if not token:
+            return {"logged_in": False, **base}
+        bot_ids = {g["id"] for g in store.list_guilds()}
+        live = manager.live_guild_ids()
+        if live:
+            bot_ids = {str(i) for i in live}
+        try:
+            data = await discord_login.home(token, bot_ids)
+        except PermissionError:
+            return {"logged_in": False, "expired": True, **base}
+        except ValueError as exc:
+            raise err(502, str(exc))
+        return {"logged_in": True, **base, **data}
+
+    @app.post("/api/home/login")
+    async def home_login():
+        """Opens Discord's login in the normal browser; the app checks /api/home until it is done."""
+        nonlocal login_flow
+        from . import discord_login
+
+        client_id = await _client_id()
+        if not client_id:
+            raise err(400, tr("לא הוגדר Bot Token. הוסף אותו בעמוד 'חיבור והגדרות'."))
+        login_flow = login_flow or discord_login.LoginFlow()
+        try:
+            url = await login_flow.start(client_id)
+        except ValueError as exc:
+            raise err(409, str(exc))
+        _open_in_browser(url)
+        return {"url": url}
+
+    @app.post("/api/home/logout")
+    async def home_logout():
+        from . import discord_login
+
+        discord_login.logout()
+        log.info(tr("התנתקת מדיסקורד בפאנל הבית"))
+        return {"ok": True}
+
+    @app.post("/api/open-url")
+    async def open_url(body: dict):
+        _open_in_browser(str(body.get("url") or ""))
+        return {"ok": True}
+
     @app.get("/api/guilds")
     async def list_guilds():
         live = manager.live_guild_ids()
@@ -1239,7 +1464,11 @@ def create_app(
     # ---- live events -----------------------------------------------------
     @app.websocket("/ws")
     async def events(ws: WebSocket):
-        if ws.headers.get("host") not in allowed_hosts:
+        phone = from_phone(ws.scope)
+        if phone and not phone_client_ok(ws.client.host if ws.client else None):
+            await ws.close(code=1008)
+            return
+        if not phone and ws.headers.get("host") not in allowed_hosts:
             await ws.close(code=1008)
             return
         await ws.accept()
@@ -1248,7 +1477,12 @@ def create_app(
         except (asyncio.TimeoutError, WebSocketDisconnect, ValueError):
             await ws.close(code=1008)
             return
-        if not isinstance(first, dict) or not token_ok(first.get("token")):
+        if phone:
+            device = phones.device_for(first.get("token") if isinstance(first, dict) else None)
+            if device is None or not device.get("verified"):
+                await ws.close(code=1008)
+                return
+        elif not isinstance(first, dict) or not token_ok(first.get("token")):
             await ws.close(code=1008)
             return
         queue = bus.subscribe()

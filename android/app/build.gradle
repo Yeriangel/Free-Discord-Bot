@@ -1,0 +1,45 @@
+plugins {
+    id "com.android.application"
+}
+
+// the app's version follows the bot's version (botd/__init__.py), set by the GitHub build
+def botVersion = (project.findProperty("botVersion") ?: "1.0.0").toString()
+def parts = botVersion.tokenize(".").collect { it.isInteger() ? it.toInteger() : 0 } + [0, 0, 0]
+
+android {
+    namespace "com.freediscordbot.app"
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.freediscordbot.app"
+        minSdk 24
+        targetSdk 34
+        versionCode parts[0] * 10000 + parts[1] * 100 + parts[2]
+        versionName botVersion
+    }
+
+    signingConfigs {
+        release {
+            // a fixed key from GitHub secrets keeps updates installable over the old app
+            def ks = System.getenv("ANDROID_KEYSTORE_FILE")
+            if (ks) {
+                storeFile file(ks)
+                storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("ANDROID_KEY_ALIAS")
+                keyPassword System.getenv("ANDROID_KEY_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig System.getenv("ANDROID_KEYSTORE_FILE") ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

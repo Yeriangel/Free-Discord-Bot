@@ -1,0 +1,70 @@
+# Builds the Android app (APK) and attaches it to the GitHub release, so people can download it next to the zip.
+# Runs by itself when a release is published; can also be run by hand from the Actions tab (the APK is then
+# available as a download on the run's page).
+#
+# Optional, for updates that install over the old app: add these repository secrets (Settings > Secrets > Actions):
+#   ANDROID_KEYSTORE_BASE64  (the .jks/.keystore file, base64), ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS,
+#   ANDROID_KEY_PASSWORD. Without them the APK is signed with a temporary key, and updating needs uninstall + install.
+name: Android app
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Version
+        id: v
+        run: |
+          VERSION=$(python3 -c "import re;print(re.search(r'VERSION = \"([^\"]+)\"', open('botd/version.py').read()).group(1))")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Signing key (optional)
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            echo "ANDROID_KEYSTORE_FILE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+          else
+            echo "No signing key secret: the APK uses a temporary key."
+          fi
+
+      - name: Build
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          gradle -p android assembleRelease -PbotVersion=${{ steps.v.outputs.version }} --no-daemon
+          cp android/app/build/outputs/apk/release/app-release.apk "FreeDiscordBot-v${{ steps.v.outputs.version }}.apk"
+
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.event.release.tag_name }}" "FreeDiscordBot-v${{ steps.v.outputs.version }}.apk" --clobber
+
+      - name: Keep the APK on the run page
+        if: github.event_name != 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: FreeDiscordBot-apk
+          path: FreeDiscordBot-v*.apk

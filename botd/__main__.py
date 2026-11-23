@@ -5,6 +5,7 @@ Starts the local control API (and the bot, if "autostart" is on). Writes
 access token so the UI window can connect. Only one instance runs at a time.
 """
 
+import asyncio
 import json
 import logging
 import logging.handlers
@@ -149,6 +150,8 @@ def main() -> int:
     def request_shutdown() -> None:
         if server is not None:
             server.should_exit = True
+        if phone_server is not None:
+            phone_server.should_exit = True
 
     app = create_app(manager, store, token, port, request_shutdown)
     # BOTD_HOST=0.0.0.0 only inside Docker (the port is published to 127.0.0.1 of the server, see HOSTING.md)
@@ -157,13 +160,31 @@ def main() -> int:
         timeout_graceful_shutdown=5,  # an old app window's live connection must not keep the service alive
     )
     server = uvicorn.Server(config)
+    phone_server = None
+    from . import mobile
+
+    settings = store.get_settings()
+    if mobile.enabled(settings):
+        phone_host = os.environ.get("BOTD_MOBILE_HOST") or mobile.tailscale_ip()
+        if phone_host:
+            phone_server = uvicorn.Server(uvicorn.Config(
+                app, host=phone_host, port=mobile.mobile_port(settings), access_log=False, log_config=None,
+                lifespan="off", timeout_graceful_shutdown=5))
+        else:
+            logging.getLogger("botd").warning("Phone access is on, but Tailscale is not running: phones cannot connect")
 
     session_path = paths.session_file()
     tmp = session_path.with_suffix(".tmp")
     tmp.write_text(json.dumps({"port": port, "token": token, "pid": os.getpid()}), encoding="utf-8")
     os.replace(tmp, session_path)
+    async def serve_all() -> None:
+        jobs = [server.serve()]
+        if phone_server is not None:
+            jobs.append(phone_server.serve())
+        await asyncio.gather(*jobs)
+
     try:
-        server.run()
+        asyncio.run(serve_all())
     finally:
         current = read_session()
         if current and current.get("pid") == os.getpid():

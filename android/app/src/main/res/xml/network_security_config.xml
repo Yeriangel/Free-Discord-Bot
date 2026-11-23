@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The bot is reached through the Tailscale private network (an address like 100.x.y.z), which Tailscale already
+     encrypts end to end. Android cannot list IP ranges here, so plain http is allowed; the app only ever opens the
+     address you paired with, and every request also needs this phone's own pairing token. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

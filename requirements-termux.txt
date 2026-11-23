@@ -1,0 +1,7 @@
+# For running the bot on an Android phone with Termux (see HOSTING.md): no compiled speed-ups that fail to build there.
+discord.py>=2.4
+fastapi>=0.110
+uvicorn>=0.30
+keyring>=25
+httpx>=0.27
+anthropic>=0.40

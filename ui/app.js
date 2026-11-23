@@ -17,6 +17,7 @@ const STATE_LABELS = {
 };
 
 const GENERAL_NAV = [
+  { page: "home", icon: "🏠", label: "בית", sub: "Home" },
   { page: "dashboard", icon: "◉", label: "לוח בקרה" },
   { page: "connection", icon: "🔑", label: "חיבור והגדרות" },
   { page: "profile", icon: "🖼", label: "פרופיל הבוט", sub: "Bot Personalizer" },
@@ -367,6 +368,7 @@ function renderNav() {
 const SINGLE_MODULE_CATS = { automations: "automations" };
 const NAV_HISTORY = { back: [], forward: [] };
 async function go(page, fromHistory = false) {
+  document.documentElement.classList.remove("nav-open");  // phones: close the menu
   if (page.startsWith("cat:") && SINGLE_MODULE_CATS[page.slice(4)]) page = "mod:" + SINGLE_MODULE_CATS[page.slice(4)];
   if (S.dirty && page !== S.page) {
     if (!(await confirmDialog("יש שינויים שלא נשמרו", "לצאת מהדף בלי לשמור? השינויים יאבדו.", "צא בלי לשמור"))) return;
@@ -398,7 +400,8 @@ function render() {
   $("#page-title").textContent = pageTitle();
   const main = $("#main");
   const p = S.page;
-  if (p === "dashboard") { main.innerHTML = viewDashboard(); renderDashboardStats(); afterConsoleRender(); }
+  if (p === "home") { main.innerHTML = viewHome(); if (!S.home) loadHome(); }
+  else if (p === "dashboard") { main.innerHTML = viewDashboard(); renderDashboardStats(); afterConsoleRender(); }
   else if (p === "connection") main.innerHTML = viewConnection();
   else if (p === "profile") {
     main.innerHTML = viewProfile();
@@ -412,6 +415,103 @@ function render() {
   else if (p === "customize") { main.innerHTML = viewCustomize(); afterCustomizeRender(); }
   else if (p.startsWith("cat:")) main.innerHTML = viewCategory(p.slice(4));
   else if (p.startsWith("mod:")) { main.innerHTML = viewModulePage(p.slice(4)); afterModuleRender(p.slice(4)); }
+}
+
+/* ===== Phone app (Android) ===== */
+const IS_PHONE = location.port && location.hostname !== "127.0.0.1" && location.hostname !== "localhost";
+if (IS_PHONE) document.documentElement.classList.add("phone");
+
+function viewPhoneCard() {
+  const m = S.mobile;
+  if (!m) { setTimeout(loadMobile, 0); return `<div class="card section" id="phone-card"><h3>${esc(t("אפליקציה לטלפון (Android)"))}</h3><div class="muted small">${esc(t("טוען…"))}</div></div>`; }
+  const devices = m.devices.map((d) => `<div class="row" style="padding:6px 0">
+      <span>📱</span><b class="no-translate">${esc(d.name)}</b>
+      <span class="muted small">${d.verified ? esc(t("מחובר כ-{name}", { name: d.discord_name })) : esc(t("מחכה להתחברות לדיסקורד"))}</span>
+      <div class="spacer"></div><button class="btn btn-sm btn-ghost" data-action="phone-remove" data-id="${esc(d.id)}">${esc(t("הסר"))}</button></div>`).join("");
+  return `<div class="card section" id="phone-card">
+      <h3>${esc(t("אפליקציה לטלפון (Android)"))}</h3>
+      <p class="desc">${esc(t("שולטים בבוט מהטלפון, דרך חיבור פרטי של Tailscale: הבוט נשאר סגור לאינטרנט, ורק המכשירים שלך מגיעים אליו. בטלפון רואים אם מפתח שמור, אבל אף פעם לא את המפתח המלא."))}</p>
+      <ol class="home-steps">
+        <li>${t('מתקינים את Tailscale (חינם) במחשב ובטלפון, ומתחברים באותו חשבון: <a href="https://tailscale.com/download" target="_blank" rel="noopener">tailscale.com/download</a>')}
+          <div class="muted small">${m.tailscale_ip ? "✅ " + esc(t("Tailscale פועל במחשב: {ip}", { ip: m.tailscale_ip })) : "⚠️ " + esc(t("Tailscale לא פועל במחשב הזה עדיין."))}</div></li>
+        <li>${esc(t("מורידים את האפליקציה (APK) מעמוד הגרסאות ב-GitHub ומתקינים בטלפון."))}</li>
+        <li>${esc(t("פעם אחת, ב-Developer Portal, בלשונית OAuth2, מוסיפים גם את ה-Redirect הזה:"))} <code class="no-translate">${esc(m.discord_redirect)}</code></li>
+        <li>${esc(t("מפעילים כאן, לוחצים 'חבר טלפון' וסורקים את הקוד עם המצלמה של הטלפון."))}</li>
+      </ol>
+      ${toggleRow("mobile_enabled", t("גישה מהטלפון"), m.enabled)}
+      <div class="row" style="flex-wrap:wrap;gap:8px">
+        ${m.enabled && !m.running ? `<button class="btn btn-sm btn-primary" data-action="phone-apply">${esc(t("החל עכשיו"))}</button>
+           <span class="muted small">${esc(t("השירות נטען מחדש לכמה שניות."))}</span>` : ""}
+        ${m.running ? `<button class="btn btn-primary" data-action="phone-pair">${esc(t("חבר טלפון"))}</button>` : ""}
+      </div>
+      <div id="phone-pair-box"></div>
+      <span class="hint">${t('אפשר גם להשתמש בטלפון כגיבוי, כדי שהבוט ימשיך לעבוד כשהמחשב כבוי: <a href="https://github.com/Yeriangel/Free-Discord-Bot/blob/main/HOSTING.md#use-your-android-phone-as-a-backup-termux" target="_blank" rel="noopener">המדריך</a>.')}</span>
+      ${devices ? `<div class="section-title small-title" style="margin-top:12px">${esc(t("טלפונים מחוברים"))}</div>${devices}` : ""}
+    </div>`;
+}
+
+async function loadMobile() {
+  try { S.mobile = await api("GET", "/mobile"); } catch (e) { return; }
+  const card = $("#phone-card");
+  if (card) card.outerHTML = viewPhoneCard();
+}
+
+/* ===== Home: log in with Discord and see your servers ===== */
+async function loadHome(quiet) {
+  try { S.home = await api("GET", "/home"); }
+  catch (e) { if (!quiet) toast(errMessage(e), "error"); S.home = S.home || { logged_in: false, error: true }; }
+  if (S.page === "home") $("#main").innerHTML = viewHome();
+}
+
+function homeCard(g, kind) {
+  const icon = g.icon ? `<img src="${esc(g.icon)}" alt="">` : `<span>${esc((g.name || "?").slice(0, 2))}</span>`;
+  const btn = kind === "here" ? `<button class="btn btn-sm btn-primary" data-action="home-open" data-gid="${esc(g.id)}">${esc(t("נהל"))}</button>`
+    : kind === "add" ? `<button class="btn btn-sm" data-action="home-add" data-gid="${esc(g.id)}">${esc(t("הוסף את הבוט"))}</button>` : "";
+  return `<div class="home-guild ${kind}">
+      <div class="home-icon">${icon}</div>
+      <div class="grow"><div class="no-translate home-name">${esc(g.name)}</div>
+        <div class="muted small">${g.owner ? esc(t("בעלים")) : g.can_manage ? esc(t("מנהל")) : esc(t("חבר"))}</div></div>
+      ${btn}</div>`;
+}
+
+function viewHome() {
+  const h = S.home;
+  if (!h) return `<div class="card section empty">${esc(t("טוען…"))}</div>`;
+  if (!h.logged_in) {
+    const portal = h.client_id ? `https://discord.com/developers/applications/${h.client_id}/oauth2` : "https://discord.com/developers/applications";
+    return `<div class="card section home-login">
+        <h3>${esc(t("התחבר עם דיסקורד"))}</h3>
+        <p class="desc">${esc(t("רואים כאן את כל השרתים שלך: איפה הבוט כבר נמצא, ואיפה אפשר להוסיף אותו בלחיצה. ההתחברות רק קוראת את השם, התמונה ורשימת השרתים שלך, ונשמרת במחשב הזה."))}</p>
+        ${h.expired ? `<div class="notice warn">${esc(t("ההתחברות פגה. התחבר שוב."))}</div>` : ""}
+        <ol class="home-steps">
+          <li>${esc(t("פעם אחת: ב-Developer Portal, בלשונית OAuth2, תחת Redirects, לוחצים Add Redirect ומדביקים את הכתובת הזו, ואז Save Changes:"))}
+            <div class="input-group" style="margin-top:6px"><input type="text" class="ltr" readonly value="${esc(h.redirect_uri)}">
+              <button class="btn" data-action="home-copy">${esc(t("העתק"))}</button>
+              <button class="btn" data-action="home-portal" data-url="${esc(portal)}">${esc(t("פתח את ה-Developer Portal"))}</button></div></li>
+          <li>${esc(t("לוחצים על הכפתור, מאשרים בדפדפן, וחוזרים לכאן."))}</li>
+        </ol>
+        <button class="btn btn-primary" data-action="home-login" ${h.client_id ? "" : "disabled"}>${esc(t("התחבר עם דיסקורד"))}</button>
+        ${h.client_id ? "" : `<span class="hint">${esc(t("קודם צריך Bot Token בעמוד 'חיבור והגדרות'."))}</span>`}
+        ${S.homeWaiting ? `<span class="muted small" style="margin-inline-start:10px">${esc(t("מחכה לאישור בדפדפן…"))}</span>` : ""}
+      </div>`;
+  }
+  const here = h.guilds.filter((g) => g.bot_here), add = h.guilds.filter((g) => !g.bot_here && g.can_manage),
+    other = h.guilds.filter((g) => !g.bot_here && !g.can_manage);
+  return `
+    <div class="card section home-user row">
+      <img class="home-avatar" src="${esc(h.user.avatar)}" alt="">
+      <div class="grow"><div class="no-translate" style="font-size:18px;font-weight:700">${esc(h.user.name)}</div>
+        <div class="muted small no-translate">@${esc(h.user.username)}</div></div>
+      <button class="btn btn-sm" data-action="home-refresh">${esc(t("רענן"))}</button>
+      <button class="btn btn-sm btn-ghost" data-action="home-logout">${esc(t("התנתק"))}</button>
+    </div>
+    <div class="section"><div class="section-title">${esc(t("שרתים עם הבוט"))} (${here.length})</div>
+      <div class="home-grid">${here.map((g) => homeCard(g, "here")).join("") || `<div class="muted small">${esc(t("הבוט עוד לא נמצא באף שרת שלך."))}</div>`}</div></div>
+    <div class="section"><div class="section-title">${esc(t("אפשר להוסיף את הבוט"))} (${add.length})</div>
+      <div class="home-grid">${add.map((g) => homeCard(g, "add")).join("") || `<div class="muted small">${esc(t("אין שרתים נוספים שאתה מנהל."))}</div>`}</div></div>
+    ${other.length ? `<details class="section"><summary class="section-title">${esc(t("שרתים אחרים"))} (${other.length})</summary>
+      <p class="desc">${esc(t("בשרתים האלה אין לך הרשאת 'ניהול שרת', אז אי אפשר להוסיף אליהם בוט."))}</p>
+      <div class="home-grid">${other.map((g) => homeCard(g, "other")).join("")}</div></details>` : ""}`;
 }
 
 /* ===== dashboard ===== */
@@ -570,6 +670,7 @@ function viewConnection() {
       ${toggleRow("keep_running_on_close", "להשאיר את הבוט רץ ברקע כשסוגרים את החלון", s.keep_running_on_close)}
       ${toggleRow("start_with_windows", "להפעיל את הבוט ברקע כשנכנסים ל-Windows (בלי חלון)", S.settings.start_with_windows)}
     </div>
+    ${IS_PHONE ? "" : viewPhoneCard()}
     <div class="card section">
       <h3>${esc(t("הרצה 24/7 על שרת"))}</h3>
       <p class="desc">${esc(t("כשהמחשב כבוי, הבוט לא עובד. כדי שיהיה מחובר תמיד, אפשר להריץ אותו על מחשב שתמיד דלוק: שרת ענן קטן (VPS), Raspberry Pi או מחשב ישן בבית. יוצרים גיבוי של ההגדרות (בלי מפתחות), ומעבירים אותו לשרת לפי המדריך."))}</p>
@@ -1879,6 +1980,59 @@ const actions = {
       toast(t("הגיבוי נשמר: {path}", { path: res.path }), "ok");
     });
   },
+  "nav-toggle"() { document.documentElement.classList.toggle("nav-open"); },
+  async "phone-pair"(btn) {
+    await guarded(btn, async () => {
+      const p = await api("POST", "/mobile/pair");
+      $("#phone-pair-box").innerHTML = `<div class="phone-pair">
+          <img src="${p.qr}" alt="QR">
+          <div><div><b>${esc(t("סרוק עם המצלמה של הטלפון"))}</b></div>
+            <div class="muted small">${esc(t("או באפליקציה: כתובת {url}, קוד {code}", { url: p.url, code: p.code }))}</div>
+            <div class="muted small">${esc(t("הקוד תקף ל-10 דקות ולשימוש אחד."))}</div></div></div>`;
+    });
+  },
+  async "phone-apply"(btn) {
+    await guarded(btn, async () => { await applyLiveUpdate(""); });
+  },
+  async "phone-remove"(btn) {
+    if (!(await confirmDialog(t("להסיר את הטלפון?"), t("הטלפון יתנתק מיד ויצטרך להתחבר מחדש."), t("הסר")))) return;
+    S.mobile.devices = (await api("DELETE", `/mobile/devices/${btn.dataset.id}`)).devices;
+    $("#phone-card").outerHTML = viewPhoneCard();
+  },
+  async "home-login"(btn) {
+    await guarded(btn, async () => {
+      await api("POST", "/home/login");
+      S.homeWaiting = true; $("#main").innerHTML = viewHome();
+      const started = Date.now();
+      while (S.page === "home" && Date.now() - started < 300000) {  // wait for the browser login
+        await new Promise((r) => setTimeout(r, 2000));
+        await loadHome(true);
+        if (S.home && S.home.logged_in) { S.homeWaiting = false; $("#main").innerHTML = viewHome(); toast(t("התחברת לדיסקורד"), "ok"); return; }
+      }
+      S.homeWaiting = false;
+    });
+  },
+  async "home-logout"() { await api("POST", "/home/logout"); S.home = null; loadHome(); },
+  "home-refresh"() { S.home = null; render(); },
+  async "home-copy"(btn) {
+    const v = btn.parentElement.querySelector("input").value;
+    try { await navigator.clipboard.writeText(v); toast("הועתק", "ok"); } catch { toast(v, "ok"); }
+  },
+  async "home-portal"(btn) { try { await api("POST", "/open-url", { url: btn.dataset.url }); } catch (e) { toast(errMessage(e), "error"); } },
+  async "home-open"(btn) {
+    S.guildId = btn.dataset.gid;
+    await loadGuild();
+    renderGuildSelect();
+    go("dashboard");
+  },
+  async "home-add"(btn) {
+    await guarded(btn, async () => {
+      if (!S.catalog) S.catalog = await api("GET", "/catalog");
+      const inv = await api("POST", "/invite", { permissions: S.catalog.recommended_permissions, guild_id: btn.dataset.gid });
+      await api("POST", "/open-url", { url: inv.url });
+      toast(t("נפתח בדפדפן. אחרי שמוסיפים את הבוט, לחץ רענן."), "ok");
+    });
+  },
   async "copy-invite"() {
     try { await navigator.clipboard.writeText(S.invite.url); toast("הועתק", "ok"); }
     catch { toast("ההעתקה נכשלה. סמן את הקישור והעתק ידנית.", "error"); }
@@ -2674,7 +2828,8 @@ document.addEventListener("change", async (e) => {
     return;
   }
   if (t.dataset.setting) {
-    try { S.settings = await api("PUT", "/settings", { [t.dataset.setting]: t.checked }); toast("נשמר", "ok"); if (t.dataset.setting === "start_with_windows") render(); }
+    try { S.settings = await api("PUT", "/settings", { [t.dataset.setting]: t.checked }); toast("נשמר", "ok"); if (t.dataset.setting === "start_with_windows") render();
+      if (t.dataset.setting === "mobile_enabled") { S.mobile = null; render(); } }
     catch (err) { t.checked = !t.checked; toast(errMessage(err), "error"); }
     return;
   }
@@ -2737,3 +2892,9 @@ async function boot() {
 }
 
 boot();
+
+/* phones: tapping outside the open menu closes it */
+document.addEventListener("click", (e) => {
+  if (document.documentElement.classList.contains("nav-open") && !e.target.closest(".sidebar") && !e.target.closest(".nav-toggle"))
+    document.documentElement.classList.remove("nav-open");
+});

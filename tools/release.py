@@ -57,7 +57,7 @@ def main() -> int:
 
     run("git", "add", "-A")
     files = [f for f in run("git", "ls-files", "--cached").splitlines()
-             if f and not f.startswith(("OldVersions/", "dist/", ".github/"))]
+             if f and not f.startswith(("OldVersions/", "dist/", ".github/", "android/"))]  # the APK is built by GitHub
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as zf:
         for f in files:
             zf.write(ROOT / f, f)

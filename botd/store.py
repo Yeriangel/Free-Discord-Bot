@@ -20,6 +20,8 @@ DEFAULT_SETTINGS = {
     "presence": {"status": "online", "activity": "none", "text": "", "url": ""},
     "appearance": {},
     "creator_anonymous": True,  # the AI is not told who created the bot, and leaves them out of member lists
+    "mobile_enabled": False,    # phone access (Android app) through Tailscale
+    "mobile_port": 8765,
 }
 MAX_ALLOWED_USERS = 15
 # modules that are on in a server until someone turns them off there

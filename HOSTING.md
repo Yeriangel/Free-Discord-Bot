@@ -102,6 +102,48 @@ sudo docker compose exec bot python -m botd url     # Docker
 Open the link it prints (`http://127.0.0.1:8765/#token=...`) in your browser on the PC. That is the same dashboard as
 in the app. Keys are not changed from there; they live in the `.env` file on the server.
 
+## Use your Android phone as a backup (Termux)
+
+Your phone can keep the bot online while the PC is off. It runs in **standby**: every 30 seconds it asks your PC
+whether the PC's bot is online. When the PC's bot is off or the PC does not answer, the phone starts the bot; as soon
+as the PC's bot is back, the phone stops it again. (For up to about 30 seconds both may answer once.)
+
+> [!NOTE]
+> This runs the real bot on the phone, so the phone needs your Bot Token and AI keys in a `.env` file. Use a phone
+> only you use. Changes made while the phone runs the bot (levels, birthdays…) stay on the phone; they are not copied
+> back to the PC.
+
+1. On the PC app: **Connection & Settings → Phone app**, turn on **Phone access** (the phone checks the PC through it),
+   and note the Tailscale address shown there (`100.x.y.z`).
+2. On the phone, install **Tailscale** (log in with the same account as the PC) and **Termux** from F-Droid
+   (the Play Store version is outdated).
+3. In Termux:
+
+```bash
+pkg update && pkg install -y python git rust binutils ffmpeg tzdata termux-api
+git clone https://github.com/Yeriangel/Free-Discord-Bot.git
+cd Free-Discord-Bot
+pip install -r requirements-termux.txt          # the first time can take 10-30 minutes
+cp .env.example .env && nano .env                # your Bot Token and keys
+```
+
+4. Copy the settings: create a backup in the PC app, put the zip in the phone's Downloads, then:
+
+```bash
+termux-setup-storage
+python -m botd import ~/storage/downloads/FreeDiscordBot-backup-....zip
+```
+
+5. Start the backup (keep Termux open in the background):
+
+```bash
+termux-wake-lock
+set -a; . ./.env; set +a
+BOTD_STANDBY_URL=http://100.x.y.z:8765 python -m botd    # the PC's Tailscale address and phone port
+```
+
+In Android settings, turn off battery optimization for Termux, or Android may stop it.
+
 ## Good to know
 
 - **Updates:** `git pull` and then `sudo docker compose up -d --build` (Docker) or `sudo systemctl restart freediscordbot`.
@@ -127,3 +169,6 @@ Raspberry Pi או מחשב ישן בבית. הבוט זהה, רק בלי החל�
    מקבלים קישור עם `python -m botd url`, ופותחים אותו בדפדפן במחשב.
 
 עדכונים: `git pull` ואז `sudo docker compose up -d --build`.
+
+**הטלפון כגיבוי (Android):** אפשר להריץ את הבוט בטלפון עם Termux במצב המתנה: הטלפון בודק כל 30 שניות אם הבוט במחשב מחובר, מפעיל
+את הבוט כשהמחשב כבוי, ועוצר אותו כשהמחשב חוזר. הצעדים המלאים בחלק האנגלי, תחת "Use your Android phone as a backup".

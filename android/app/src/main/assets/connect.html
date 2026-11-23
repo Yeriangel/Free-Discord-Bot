@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Free Discord Bot</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, "Segoe UI", Roboto, sans-serif; background: #0d0f14; color: #e8e9ee; padding: 24px 18px; }
+  .logo { display: block; width: 84px; height: 84px; margin: 8px auto 10px; border-radius: 20px; }
+  h1 { text-align: center; font-size: 22px; margin: 0 0 4px; }
+  .sub { text-align: center; color: #9aa0ad; font-size: 14px; margin-bottom: 20px; }
+  .card { background: #161922; border: 1px solid #262a36; border-radius: 14px; padding: 16px; margin-bottom: 14px; }
+  label { display: block; font-size: 13px; color: #9aa0ad; margin: 10px 0 4px; }
+  input { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid #2c3140; background: #0d0f14; color: #fff; font-size: 16px; }
+  button { width: 100%; padding: 13px; border: 0; border-radius: 10px; font-size: 16px; font-weight: 600; margin-top: 14px; }
+  .primary { background: #6d5dfc; color: #fff; }
+  .ghost { background: transparent; color: #9aa0ad; border: 1px solid #2c3140; }
+  .status { padding: 12px; border-radius: 10px; margin-bottom: 14px; font-size: 14px; display: none; }
+  .status.ok { display: block; background: #1d3b2b; }
+  .status.wait { display: block; background: #23263a; }
+  .status.bad { display: block; background: #3b1d24; }
+  ol { padding-inline-start: 20px; line-height: 1.6; font-size: 14px; color: #c8cbd4; margin: 6px 0 0; }
+  .ver { text-align: center; color: #5d6372; font-size: 12px; margin-top: 18px; }
+</style>
+</head>
+<body>
+  <img class="logo" src="logo.png" alt="">
+  <h1>Free Discord Bot</h1>
+  <div class="sub">Control your bot from your phone</div>
+
+  <div id="status" class="status"></div>
+
+  <div class="card" id="pair-card">
+    <b>Connect to your PC</b>
+    <ol>
+      <li>Install <b>Tailscale</b> on your PC and this phone, and log in to the same account.</li>
+      <li>On the PC app: <b>Connection &amp; Settings → Phone app</b>, turn on phone access and press <b>Connect a phone</b>.</li>
+      <li>Scan the QR code with this phone's camera, or type the address and code here:</li>
+    </ol>
+    <label for="url">Address</label>
+    <input id="url" type="url" inputmode="url" placeholder="http://100.x.y.z:8765" autocomplete="off">
+    <label for="code">Code</label>
+    <input id="code" inputmode="numeric" maxlength="6" placeholder="123456" autocomplete="one-time-code">
+    <button class="primary" onclick="connect()">Connect</button>
+  </div>
+
+  <div class="card" id="paired-card" style="display:none">
+    <b>This phone is paired</b>
+    <button class="primary" onclick="Android.retry()">Try again</button>
+    <button class="ghost" onclick="Android.login()">Log in with Discord again</button>
+    <button class="ghost" onclick="if (confirm('Disconnect this phone? You will need a new code from the PC.')) Android.forget()">Disconnect this phone</button>
+  </div>
+
+  <div class="ver" id="ver"></div>
+
+<script>
+  const q = new URLSearchParams(location.search);
+  const status = q.get("status") || "", paired = q.get("paired") === "1";
+  const MESSAGES = {
+    pairing: ["wait", "Connecting to your PC…"],
+    discord_waiting: ["wait", "Log in with Discord in the browser, then come back here."],
+    discord_checking: ["wait", "Checking your Discord account with the PC…"],
+    discord_failed: ["bad", "The Discord login did not finish. Try again."],
+    offline: ["bad", "The PC is not reachable. Is it on, with the bot app open and Tailscale connected on both devices?"],
+    bad_link: ["bad", "That QR code is not complete. Make a new one on the PC."],
+    no_client_id: ["bad", "The PC has no Bot Token yet. Add it in the PC app first."],
+  };
+  const box = document.getElementById("status");
+  function show(kind, text) { box.className = "status " + kind; box.textContent = text; }
+  if (MESSAGES[status]) show(...MESSAGES[status]);
+  else if (status.startsWith("pair_failed:")) show("bad", "Could not connect: " + status.slice(12));
+  else if (status.startsWith("discord_refused:")) show("bad", status.slice(16));
+  if (paired) {
+    document.getElementById("paired-card").style.display = "block";
+    document.getElementById("pair-card").style.display = "none";
+  }
+  document.getElementById("ver").textContent = "Version " + (q.get("version") || "");
+  function connect() {
+    let url = document.getElementById("url").value.trim();
+    const code = document.getElementById("code").value.trim();
+    if (!url || code.length !== 6) { show("bad", "Type the address and the 6-digit code from the PC."); return; }
+    if (!/^https?:\/\//.test(url)) url = "http://" + url;
+    Android.pair(url, code);
+  }
+</script>
+</body>
+</html>
