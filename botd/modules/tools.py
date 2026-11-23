@@ -260,6 +260,20 @@ def roblox_asset_id(text: str) -> str | None:
     return None
 
 
+AUDIO_FORMATS = [("mp3", "MP3"), ("mp4", "MP4"), ("original", N_("הקובץ המקורי (OGG / MP3)"))]
+
+
+async def convert_audio(ffmpeg: str, data: bytes, src_ext: str, target: str) -> bytes:
+    """Roblox sound -> MP3, or MP4 (AAC sound, plays in Discord's player)."""
+    with tempfile.TemporaryDirectory(prefix="botd-audio-") as tmp:
+        src, dst = Path(tmp) / f"in.{src_ext}", Path(tmp) / f"out.{target}"
+        src.write_bytes(data)
+        codec = ["-c:a", "libmp3lame", "-q:a", "2"] if target == "mp3" else ["-vn", "-c:a", "aac", "-b:a", "192k",
+                                                                             "-movflags", "+faststart"]
+        await images.run_ffmpeg(ffmpeg, "-i", str(src), *codec, str(dst))
+        return dst.read_bytes()
+
+
 def audio_ext(data: bytes) -> str | None:
     if data.startswith(b"OggS"):
         return "ogg"
@@ -624,8 +638,11 @@ class Tools(commands.Cog):
     @app_commands.command(name="roblox-audio", description=N_("הורדת סאונד או שיר מרובלוקס"))
     @app_commands.allowed_installs(guilds=True, users=True)
     @app_commands.allowed_contexts(**EVERYWHERE)
-    @app_commands.describe(audio=N_("מספר הסאונד (ID) או קישור אליו ברובלוקס"))
-    async def roblox_audio(self, interaction: discord.Interaction, audio: app_commands.Range[str, 1, 200]):
+    @app_commands.describe(audio=N_("מספר הסאונד (ID) או קישור אליו ברובלוקס"),
+                           format=N_("באיזה פורמט לשלוח (ברירת מחדל MP3)"))
+    @app_commands.choices(format=[app_commands.Choice(name=label, value=key) for key, label in AUDIO_FORMATS])
+    async def roblox_audio(self, interaction: discord.Interaction, audio: app_commands.Range[str, 1, 200],
+                           format: str | None = None):  # noqa: A002 - the option is called "format" in Discord
         if not await self._allowed(interaction, "roblox_audio"):
             return
         lang = self._lang(interaction)
@@ -654,6 +671,17 @@ class Tools(commands.Cog):
         ext = audio_ext(data)
         if not ext:
             return await interaction.followup.send(tr("רובלוקס לא מסר את הקובץ של הסאונד הזה.", lang))
+        target = format or "mp3"
+        if target in ("mp3", "mp4") and target != ext:
+            ffmpeg = find_ffmpeg()
+            if not ffmpeg:
+                return await interaction.followup.send(
+                    tr("כדי לעבוד עם קבצים, מי שמריץ את הבוט צריך להתקין ffmpeg (בחלון PowerShell: winget install ffmpeg) ולהפעיל את הבוט מחדש.", lang))
+            try:
+                data, ext = await convert_audio(ffmpeg, data, ext, target), target
+            except RuntimeError as exc:
+                log.warning("audio conversion failed: %s", exc)
+                return await interaction.followup.send(tr("לא הצלחתי להמיר את הקובץ.", lang))
         if len(data) > MAX_GIF_BYTES:
             return await interaction.followup.send(tr("הקובץ שיצא גדול מדי לדיסקורד (יותר מ-10MB).", lang))
         title = info.get("Name") or f"audio {aid}"

@@ -120,6 +120,17 @@ def create_app(
     def token_ok(value: str | None) -> bool:
         return hmac.compare_digest((value or "").encode("utf-8", "replace"), token_bytes)
 
+    RESUME_KEY = "resume_bot_after_restart"
+    RESUME_WINDOW = 90  # seconds: an update, restart or the launcher replacing an old version starts the next one at once
+
+    def remember_running_bot() -> None:
+        """When this service stops while the bot is online, the next service brings the bot back online by itself
+        if it starts soon after (an update or restart), so nobody has to press Start again."""
+        import time as _time
+
+        if manager.state in ("connecting", "connected", "reconnecting"):
+            store.set_kv(RESUME_KEY, _time.time())
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         bus.attach(asyncio.get_running_loop())
@@ -128,7 +139,15 @@ def create_app(
         import os
 
         autostart = store.get_settings()["autostart_bot"] or os.environ.get("BOTD_AUTOSTART") == "1"  # servers: always on
-        if autostart and secrets_store.get("bot_token"):
+        import time as _time
+
+        stamp = store.get_kv(RESUME_KEY, 0) or 0  # when the bot was last online at a shutdown
+        resume = isinstance(stamp, (int, float)) and 0 < _time.time() - stamp < RESUME_WINDOW
+        if stamp:
+            store.set_kv(RESUME_KEY, 0)
+        if resume:
+            log.info(tr("הבוט רץ לפני העדכון, מפעיל אותו שוב"))
+        if (autostart or resume) and secrets_store.get("bot_token"):
             try:
                 await manager.start()
             except ValueError as exc:
@@ -174,6 +193,7 @@ def create_app(
         pythonw = exe.with_name("pythonw.exe")
         flags = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW) \
             if sys.platform == "win32" else 0
+        remember_running_bot()
         subprocess.Popen([str(pythonw if pythonw.exists() else exe), str(UI_DIR.parent / "app.py"), "--restart"],
                          cwd=str(UI_DIR.parent), creationflags=flags, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL, close_fds=True)
@@ -198,6 +218,7 @@ def create_app(
         subprocess.Popen([str(pythonw if pythonw.exists() else exe), "-m", "botd"], cwd=str(UI_DIR.parent), env=env,
                          creationflags=flags, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=open(paths.log_dir() / "botd-stderr.log", "ab"), close_fds=True)
+        remember_running_bot()
         asyncio.create_task(_shutdown_now(tr("מחיל את העדכון: השירות נטען מחדש עם הגרסה החדשה")))
         return {"ok": True}
 
@@ -217,6 +238,7 @@ def create_app(
 
     @app.post("/api/shutdown")
     async def shutdown():
+        remember_running_bot()
         asyncio.create_task(_shutdown_now(tr("התקבלה בקשת כיבוי לשירות")))
         return {"ok": True}
 
@@ -233,6 +255,7 @@ def create_app(
             current = await asyncio.to_thread(read_session)
             if current and current.get("pid") not in (None, os.getpid()) and current.get("token") != session_token \
                     and await asyncio.to_thread(session_alive, current):
+                remember_running_bot()
                 await _shutdown_now(tr("שירות חדש יותר פועל, השירות הישן נסגר"))
                 return
 

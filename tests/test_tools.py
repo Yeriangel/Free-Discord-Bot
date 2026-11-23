@@ -374,6 +374,21 @@ def test_template_search_rules():
     assert asyncio.run(roblox_assets.find_template_image(client, "1000", {"AssetTypeId": 8})) is None  # not clothing
 
 
+def test_audio_formats():
+    ffmpeg = tools.find_ffmpeg()
+    if not ffmpeg:
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        ogg = Path(tmp) / "a.ogg"
+        subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+                        "-c:a", "libvorbis", str(ogg)], check=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        data = ogg.read_bytes()
+        assert tools.audio_ext(data) == "ogg"
+        mp3 = asyncio.run(tools.convert_audio(ffmpeg, data, "ogg", "mp3"))
+        mp4 = asyncio.run(tools.convert_audio(ffmpeg, data, "ogg", "mp4"))
+        assert tools.audio_ext(mp3) == "mp3" and mp4[4:8] == b"ftyp"
+
+
 def test_english_time_zone_names():
     import re
 
