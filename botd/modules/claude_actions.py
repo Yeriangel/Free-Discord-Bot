@@ -132,8 +132,8 @@ async def load_members(guild: discord.Guild) -> None:
             pass
 
 
-def _members_in(guild: discord.Guild, channel, scope: str, include_bots: bool) -> list:
-    members = list(guild.members)
+def _members_in(guild: discord.Guild, channel, scope: str, include_bots: bool, hidden: int | None = None) -> list:
+    members = [m for m in guild.members if m.id != hidden]  # anonymous mode: the creator is not in the lists
     if scope == "channel" and channel is not None and hasattr(channel, "permissions_for"):
         members = [m for m in members if channel.permissions_for(m).view_channel]
     if not include_bots:
@@ -162,7 +162,8 @@ def run_read_tool(bot, guild: discord.Guild, name: str, args: dict, channel=None
     gid = str(guild.id)
     if name in MEMBER_TOOLS:
         scope = args.get("scope") if args.get("scope") in ("channel", "server") else "channel"
-        members = _members_in(guild, channel, scope, bool(args.get("include_bots")))
+        hidden = bot.hidden_creator_id() if bot is not None and hasattr(bot, "hidden_creator_id") else None
+        members = _members_in(guild, channel, scope, bool(args.get("include_bots")), hidden if isinstance(hidden, int) else None)
         where = f"#{getattr(channel, 'name', '?')}" if scope == "channel" else "the server"
         if name == "list_members":
             shown = members[:MAX_LISTED]

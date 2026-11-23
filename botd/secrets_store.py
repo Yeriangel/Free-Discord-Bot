@@ -1,4 +1,7 @@
-"""Secrets live in Windows Credential Manager (via keyring), never in files or the DB."""
+"""Secrets live in Windows Credential Manager (via keyring), never in files or the DB.
+
+On a server (Linux, Docker) there is usually no credential store: there each key comes from an environment variable
+named BOTD_ + the key name in capitals, e.g. BOTD_BOT_TOKEN, BOTD_ANTHROPIC_KEY (see HOSTING.md)."""
 
 from .i18n import tr
 import os
@@ -20,9 +23,24 @@ def _check(name: str) -> None:
         raise KeyError(name)
 
 
+def env_name(name: str) -> str:
+    return "BOTD_" + name.upper()
+
+
+def _keyring_get(name: str) -> str | None:
+    try:
+        return keyring.get_password(SERVICE, name)
+    except Exception:  # noqa: BLE001 - no credential store on this machine (a server)
+        return None
+
+
+def from_env(name: str) -> bool:
+    return bool(os.environ.get(env_name(name), "").strip())
+
+
 def get(name: str) -> str | None:
     _check(name)
-    value = keyring.get_password(SERVICE, name)
+    value = os.environ.get(env_name(name), "").strip() or _keyring_get(name)
     register_secret(value)
     return value or None
 
@@ -32,19 +50,24 @@ def set(name: str, value: str) -> None:  # noqa: A001 - module-level API
     value = value.strip()
     if not value:
         raise ValueError(tr("ערך ריק"))
-    old = keyring.get_password(SERVICE, name)
+    old = _keyring_get(name)
     register_secret(value)
-    keyring.set_password(SERVICE, name, value)
+    try:
+        keyring.set_password(SERVICE, name, value)
+    except Exception:  # noqa: BLE001
+        raise ValueError(tr("אין כאן מקום שמור למפתחות. בשרת, שמים את המפתח במשתנה הסביבה {env}.", env=env_name(name))) from None
     if old and old != value:
         unregister_secret(old)
 
 
 def delete(name: str) -> None:
     _check(name)
-    old = keyring.get_password(SERVICE, name)
+    old = _keyring_get(name)
     try:
         keyring.delete_password(SERVICE, name)
     except PasswordDeleteError:
+        pass
+    except Exception:  # noqa: BLE001 - no credential store
         pass
     unregister_secret(old)
 

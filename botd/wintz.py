@@ -199,6 +199,13 @@ def search(query: str, limit: int = 25) -> list[tuple[str, str]]:
     off = parse_offset(q) if q else None
     if off is not None:
         results.append((f"{fmt_offset(off)} (fixed offset, no summer time)", fmt_offset(off)))
+    if iana_zones():  # Linux / macOS
+        for zone in iana_zones():
+            if not q or q.replace(" ", "_") in zone.lower():
+                results.append((zone.replace("_", " "), zone))
+            if len(results) >= limit:
+                break
+        return results[:limit]
     seen = set()
     for city, zone in CITIES.items():
         if q and q in city and zone in zones() and zone not in seen:
@@ -216,11 +223,37 @@ def search(query: str, limit: int = 25) -> list[tuple[str, str]]:
     return results[:limit]
 
 
+@lru_cache(maxsize=1)
+def iana_zones() -> list[str]:
+    """Linux / macOS time zones ('Asia/Jerusalem'), used when Windows' list is not there."""
+    if zones():
+        return []
+    try:
+        import zoneinfo
+
+        return sorted(z for z in zoneinfo.available_timezones() if "/" in z and not z.startswith(("Etc/", "SystemV/")))
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _iana_offset(zone: str, local: dt.datetime) -> int:
+    import zoneinfo
+
+    return int(local.replace(tzinfo=zoneinfo.ZoneInfo(zone)).utcoffset().total_seconds() // 60)
+
+
 def resolve(value: str) -> tuple[str, str] | None:
     """What the user picked or typed -> (kind, value): ('zone', key) or ('offset', 'UTC+03:00')."""
     v = value.strip()
     if v in zones():
         return "zone", v
+    if iana_zones():
+        if v in iana_zones():
+            return "iana", v
+        low = v.lower().replace(" ", "_")
+        hit = next((z for z in iana_zones() if z.lower().endswith("/" + low) or z.lower() == low), None)
+        if hit:
+            return "iana", hit
     off = parse_offset(v)
     if off is not None:
         return "offset", fmt_offset(off)
@@ -231,7 +264,10 @@ def resolve(value: str) -> tuple[str, str] | None:
 
 def to_utc(kind: str, value: str, local: dt.datetime) -> tuple[dt.datetime, int]:
     """Local wall time in the zone -> (UTC time, offset in minutes)."""
-    offset = parse_offset(value) if kind == "offset" else utc_offset_minutes(value, local)
+    if kind == "iana":
+        offset = _iana_offset(value, local)
+    else:
+        offset = parse_offset(value) if kind == "offset" else utc_offset_minutes(value, local)
     return local - dt.timedelta(minutes=offset), offset
 
 
@@ -239,5 +275,9 @@ def now_in(kind: str, value: str) -> dt.datetime:
     utc_now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
     if kind == "offset":
         return utc_now + dt.timedelta(minutes=parse_offset(value))
+    if kind == "iana":
+        import zoneinfo
+
+        return dt.datetime.now(zoneinfo.ZoneInfo(value)).replace(tzinfo=None)
     guess = utc_now + dt.timedelta(minutes=-_unpack(zones()[value]["tzi"])[0])
     return utc_now + dt.timedelta(minutes=utc_offset_minutes(value, guess))

@@ -54,6 +54,12 @@ class ManagedBot(commands.Bot):
         config["_lang"] = lang
         return config
 
+    def hidden_creator_id(self) -> int | None:
+        """The creator's ID while anonymous mode is on (the AI must not see them), else None."""
+        if self.store.get_settings().get("creator_anonymous", True):
+            return self.creator_id
+        return None
+
     def lang(self, guild: discord.abc.Snowflake | None) -> str:
         """The bot's language in this server (Hebrew by default)."""
         return self.store.guild_lang_obj(str(guild.id)) if guild is not None else "he"
@@ -140,7 +146,15 @@ class ManagedBot(commands.Bot):
         except discord.HTTPException as exc:
             log.warning(tr("רישום פקודות הסלאש נכשל: %s"), exc.text or exc.status)
 
+    creator_id: int | None = None  # who owns the bot's application (the Developer Portal owner)
+
     async def on_ready(self) -> None:
+        try:
+            info = await self.application_info()
+            owner = info.team.owner_id if info.team else info.owner.id
+            self.creator_id = int(owner) if owner else None
+        except (discord.HTTPException, AttributeError):
+            self.creator_id = None
         await self.manager.apply_presence()
         self.manager._sync_guilds(self)
         self.manager._set_state("connected")

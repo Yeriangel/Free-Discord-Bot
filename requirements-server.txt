@@ -1,0 +1,7 @@
+# For running the bot on a server (Linux / Docker): the same as requirements.txt, without the desktop window.
+discord.py>=2.4
+fastapi>=0.110
+uvicorn[standard]>=0.30
+keyring>=25
+httpx>=0.27
+anthropic>=0.40

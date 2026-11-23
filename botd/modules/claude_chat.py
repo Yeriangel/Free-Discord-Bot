@@ -34,8 +34,10 @@ LANGUAGE_RULE = ("\n\nAlways reply in the same language as the user's latest mes
 def should_respond(*, is_dm: bool, author_id: str, channel_id: str, parent_id: str | None,
                    mentioned: bool, reply_to_bot: bool, allowed_user: str, allowed_channel: str,
                    reply_without_mention: bool) -> bool:
-    """Pure trigger rule. Only the allowed user is ever answered."""
-    if not allowed_user or author_id != allowed_user:
+    """Pure trigger rule. allowed_user is a list of IDs ("1,2,3"); empty = everyone may talk to the bot."""
+    from ..store import may_talk
+
+    if not may_talk({"allowed_user_id": allowed_user}, author_id):
         return False
     if is_dm:
         return True
@@ -73,6 +75,17 @@ def yes_no(text: str) -> bool | None:
     if word in NO_WORDS:
         return False
     return None
+
+
+def creator_note(bot) -> str:
+    """When anonymous mode is off, the AI knows who created and runs it."""
+    creator = getattr(bot, "creator_id", None)
+    if not creator or bot.store.get_settings().get("creator_anonymous", True):
+        return ""
+    user = bot.get_user(creator)
+    name = f"{user.display_name} (@{user.name})" if user else "your creator"
+    return (f"\n\nThe person who created you and runs you is {name}, Discord ID {creator}, mention <@{creator}>. "
+            "When they talk to you, you know it is your creator.")
 
 
 def character_prompt(store, guild, channel) -> str:
@@ -206,7 +219,9 @@ class ClaudeChat(commands.Cog):
         if cfg is None:
             return
         view = self.pending.get(message.channel.id)
-        if view is not None and str(message.author.id) == settings["allowed_user_id"]:
+        from ..store import may_talk
+
+        if view is not None and may_talk(settings, message.author.id):
             answer = yes_no(message.content)
             if answer is not None:  # a typed "yes"/"no" answers the waiting confirmation
                 view.value = answer
@@ -277,6 +292,7 @@ class ClaudeChat(commands.Cog):
                     tools = claude_actions.available_tools(self.bot, message.guild, bool(cfg.get("allow_actions"))) if in_guild else []
                     if tools:
                         system += "\n\n" + claude_actions.server_context(message.guild, [t["name"] for t in tools])
+                    system += creator_note(self.bot)
                     request = dict(model=model, max_tokens=MAX_TOKENS, system=system,
                                    output_config={"effort": cfg["effort"]}, messages=messages)
                     if tools:
@@ -406,7 +422,9 @@ class ClaudeChat(commands.Cog):
     @app_commands.command(name="claude_reset", description=N_("מחיקת הזיכרון של השיחה עם Claude בערוץ הזה"))
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def claude_reset(self, interaction: discord.Interaction) -> None:
-        if str(interaction.user.id) != self.bot.store.get_settings()["allowed_user_id"]:
+        from ..store import may_talk
+
+        if not may_talk(self.bot.store.get_settings(), interaction.user.id):
             await interaction.response.send_message(tr("רק המשתמש המורשה יכול להשתמש בפקודה הזו.", self.bot.lang(interaction.guild)), ephemeral=True)
             return
         self.history.pop(interaction.channel_id, None)

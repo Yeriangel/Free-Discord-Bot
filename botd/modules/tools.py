@@ -227,6 +227,8 @@ def event_time(clock: str, zone: str, day: str | None = None) -> tuple[int, str,
     local = dt.datetime(date.year, date.month, date.day, hm[0], hm[1])
     utc, offset = wintz.to_utc(kind, value, local)
     unix = int(utc.replace(tzinfo=dt.timezone.utc).timestamp())
+    if kind == "iana":
+        return unix, f"{value.split('/')[-1].replace('_', ' ')} ({wintz.fmt_offset(offset)})", local
     if kind == "zone":  # the English name, whatever language Windows has
         place = wintz.english_city(value) or value.replace(" Standard Time", "")
         return unix, f"{place} ({wintz.fmt_offset(offset)})", local
@@ -243,6 +245,31 @@ def template_id(asset_xml: str) -> str | None:
 
 
 ROBLOX_PROFILE_RE = re.compile(r"roblox\.com/users/(\d+)", re.I)
+ROBLOX_ASSET_RES = [re.compile(p, re.I) for p in (
+    r"(?:catalog|library|asset|bundles|store/asset|marketplace/asset)/(\d{3,20})",  # roblox.com / create.roblox.com links
+    r"[?&](?:id|assetId)=(\d{3,20})", r"rbxassetid://(\d{3,20})", r"\b(\d{3,20})\b")]
+AUDIO_TYPE = 3
+
+
+def roblox_asset_id(text: str) -> str | None:
+    """A catalog / library / Creator Store link, rbxassetid://..., or a plain number -> the asset ID."""
+    for rx in ROBLOX_ASSET_RES:
+        m = rx.search(text or "")
+        if m:
+            return m.group(1)
+    return None
+
+
+def audio_ext(data: bytes) -> str | None:
+    if data.startswith(b"OggS"):
+        return "ogg"
+    if data.startswith(b"ID3") or data[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"):
+        return "mp3"
+    if data.startswith(b"RIFF") and data[8:12] == b"WAVE":
+        return "wav"
+    if data.startswith(b"fLaC"):
+        return "flac"
+    return None
 
 
 def roblox_query(text: str) -> tuple[str, str]:
@@ -528,10 +555,9 @@ class Tools(commands.Cog):
         if not await self._allowed(interaction, "roblox_cloth"):
             return
         lang = self._lang(interaction)
-        m = re.search(r"(\d{3,20})", item)
-        if not m:
+        aid = roblox_asset_id(item)
+        if not aid:
             return await interaction.response.send_message(tr("כתוב את מספר הפריט (ID) או הדבק את הקישור שלו.", lang), ephemeral=True)
-        aid = m.group(1)
         await interaction.response.defer(thinking=True)
         key = secrets_store.get("roblox_api_key")
         try:
@@ -584,6 +610,52 @@ class Tools(commands.Cog):
             embed.description = tr("רובלוקס נותן את התבנית של פריטים שיצרו שחקנים רק עם מפתח API (חינמי). מי שמריץ את הבוט "
                                    "יכול להוסיף אותו באפליקציה, בעמוד 'חיבור והגדרות'. בינתיים, זו התמונה של הפריט.", lang)
         await interaction.followup.send(embed=embed)
+
+    # ---- /roblox-audio
+    @app_commands.command(name="roblox-audio", description=N_("הורדת סאונד או שיר מרובלוקס"))
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(**EVERYWHERE)
+    @app_commands.describe(audio=N_("מספר הסאונד (ID) או קישור אליו ברובלוקס"))
+    async def roblox_audio(self, interaction: discord.Interaction, audio: app_commands.Range[str, 1, 200]):
+        if not await self._allowed(interaction, "roblox_audio"):
+            return
+        lang = self._lang(interaction)
+        aid = roblox_asset_id(audio)
+        if not aid:
+            return await interaction.response.send_message(tr("כתוב את מספר הסאונד (ID) או הדבק את הקישור שלו.", lang), ephemeral=True)
+        await interaction.response.defer(thinking=True)
+        key = secrets_store.get("roblox_api_key")
+        try:
+            async with httpx.AsyncClient(timeout=30, headers=HTTP_HEADERS, follow_redirects=True) as client:
+                details = await client.get(f"https://economy.roblox.com/v2/assets/{aid}/details")
+                info = details.json() if details.status_code == 200 else {}
+                if not info:
+                    return await interaction.followup.send(tr("לא נמצא פריט עם המספר {id}.", lang, id=aid))
+                if info.get("AssetTypeId") != AUDIO_TYPE:
+                    return await interaction.followup.send(tr("הפריט {id} הוא לא סאונד.", lang, id=aid))
+                try:
+                    data = await roblox_assets.download(client, aid, key)
+                except roblox_assets.NeedsKey:
+                    msg = tr("מפתח ה-API של רובלוקס לא עבד. בדוק שיש לו הרשאת legacy-asset:manage.", lang) if key else tr(
+                        "רובלוקס נותן סאונדים שהעלו שחקנים רק עם מפתח API (חינמי). מי שמריץ את הבוט יכול להוסיף אותו "
+                        "באפליקציה, בעמוד 'חיבור והגדרות'. מוזיקה רשמית של רובלוקס עובדת גם בלי.", lang)
+                    return await interaction.followup.send(msg)
+        except httpx.HTTPError:
+            return await interaction.followup.send(tr("רובלוקס לא עונה כרגע. נסה שוב עוד מעט.", lang))
+        ext = audio_ext(data)
+        if not ext:
+            return await interaction.followup.send(tr("רובלוקס לא מסר את הקובץ של הסאונד הזה.", lang))
+        if len(data) > MAX_GIF_BYTES:
+            return await interaction.followup.send(tr("הקובץ שיצא גדול מדי לדיסקורד (יותר מ-10MB).", lang))
+        title = info.get("Name") or f"audio {aid}"
+        name = re.sub(r"[^\w.-]", "_", title)[:60] or "audio"
+        embed = discord.Embed(title=f"🔊 {title}", url=f"https://create.roblox.com/store/asset/{aid}",
+                              description=(info.get("Description") or "")[:300] or None, color=themed(lang, COLOR_INFO))
+        creator = (info.get("Creator") or {}).get("Name")
+        if creator:
+            embed.set_author(name=creator)
+        embed.set_footer(text=f"{ext.upper()} · ID {aid}")
+        await interaction.followup.send(embed=embed, file=discord.File(io.BytesIO(data), f"{name}.{ext}"))
 
     # ---- /roblox-user
     @app_commands.command(name="roblox-user", description=N_("מידע על משתמש רובלוקס"))

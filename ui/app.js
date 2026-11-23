@@ -555,17 +555,29 @@ function viewConnection() {
       <h3>מי מורשה לדבר עם הבוט</h3>
       <p class="desc" style="margin-bottom:14px">לחיצה ימנית על המשתמש או על הערוץ בדיסקורד, ואז "העתק מזהה". צריך להפעיל קודם מצב מפתחים בהגדרות דיסקורד, תחת מתקדם.</p>
       <div class="grid" style="grid-template-columns:1fr 1fr">
-        <div class="field"><span class="label">User ID מורשה</span><input type="text" class="ltr" id="allowed_user_id" value="${esc(s.allowed_user_id)}" placeholder="123456789012345678"></div>
+        <div class="field"><span class="label">${esc(t("משתמשים מורשים (עד 15)"))}</span>
+          <textarea class="ltr" id="allowed_user_id" rows="3" placeholder="123456789012345678, 234567890123456789">${esc((s.allowed_user_id || "").split(",").filter(Boolean).join(", "))}</textarea>
+          <span class="hint">${esc(t("מזהים מופרדים בפסיק או בשורה חדשה. ריק = כל אחד יכול לדבר עם הבוט (התשובות של ה-AI עולות לך כסף מהמפתח שלך)."))}</span></div>
         <div class="field"><span class="label">ערוץ מורשה (לא חובה)</span><input type="text" class="ltr" id="allowed_channel_id" value="${esc(s.allowed_channel_id)}" placeholder="ריק = כל ערוץ ו-DM"></div>
       </div>
       <button class="btn btn-primary" data-action="save-ids">שמור</button>
+      ${toggleRow("creator_anonymous", t("מצב אנונימי: הבוט לא יודע מי יצר אותו, ולא רואה אותך ברשימות החברים"), s.creator_anonymous !== false)}
+      <span class="hint">${esc(t("כשהמצב כבוי, ה-AI יודע שאתה היוצר שלו (לפי בעלי האפליקציה ב-Developer Portal) ומתייחס אליך ככה."))}</span>
     </div>
     <div class="card section">
       <h3>התנהגות</h3>
       ${toggleRow("autostart_bot", "להפעיל את הבוט אוטומטית כשהשירות עולה", s.autostart_bot)}
       ${toggleRow("keep_running_on_close", "להשאיר את הבוט רץ ברקע כשסוגרים את החלון", s.keep_running_on_close)}
       ${toggleRow("start_with_windows", "להפעיל את הבוט ברקע כשנכנסים ל-Windows (בלי חלון)", S.settings.start_with_windows)}
-      <span class="hint">${esc(t("כשהמחשב כבוי, הבוט לא יכול לעבוד. כדי שיעבוד 24/7, אפשר להריץ אותו על מחשב שתמיד דלוק (שרת ענן קטן או Raspberry Pi)."))}</span>
+    </div>
+    <div class="card section">
+      <h3>${esc(t("הרצה 24/7 על שרת"))}</h3>
+      <p class="desc">${esc(t("כשהמחשב כבוי, הבוט לא עובד. כדי שיהיה מחובר תמיד, אפשר להריץ אותו על מחשב שתמיד דלוק: שרת ענן קטן (VPS), Raspberry Pi או מחשב ישן בבית. יוצרים גיבוי של ההגדרות (בלי מפתחות), ומעבירים אותו לשרת לפי המדריך."))}</p>
+      <div class="row" style="margin-top:10px;flex-wrap:wrap">
+        <button class="btn btn-primary" data-action="make-backup">${esc(t("צור גיבוי לשרת"))}</button>
+        <a class="btn" href="https://github.com/Yeriangel/Free-Discord-Bot/blob/main/HOSTING.md" target="_blank" rel="noopener">${esc(t("פתח את המדריך"))}</a>
+      </div>
+      <span class="hint">${esc(t("חשוב: מריצים את הבוט רק במקום אחד. אחרי שהשרת עובד, כבה כאן את הבוט ואת ההפעלה האוטומטית, אחרת כל הודעה תקבל שתי תשובות."))}</span>
     </div>
     <div class="notice">
       ${t("<b>Privileged Intents:</b> מודולים כמו ברוכים הבאים ואוטומוד צריכים את Server Members Intent ואת Message Content Intent. אפשר להפעיל אותם בלחיצה על 'הפעל אוטומטית' בעמודי המודולים, או ידנית ב-Developer Portal, בלשונית Bot.")}
@@ -1544,7 +1556,7 @@ function viewClaudeStatus() {
       <div class="grid" style="grid-template-columns:1fr 1fr;margin-top:10px">
         <div class="grid" style="gap:8px">
           ${check(key, t("{key} שמור", { key: PROV[1] }), t("חסר {key}", { key: PROV[1] }))}
-          ${check(!!set.allowed_user_id, `משתמש מורשה: <span class="ltr">${esc(set.allowed_user_id)}</span>`, "לא הוגדר User ID מורשה: הבוט לא יענה לאף אחד")}
+          <div class="row"><span class="badge">👤</span><span>${set.allowed_user_id ? `${esc(t("משתמשים מורשים"))}: <span class="ltr">${esc(set.allowed_user_id.split(",").join(", "))}</span>` : esc(t("כל אחד יכול לדבר עם הבוט"))}</span></div>
           <div class="row"><span class="badge">#</span><span>${set.allowed_channel_id ? `ערוץ מורשה: <span class="ltr">${esc(set.allowed_channel_id)}</span>` : "כל ערוץ (בתיוג) והודעות פרטיות"}</span></div>
           <div class="muted small">${t('משנים את אלה בעמוד <a href="#" data-nav="connection">חיבור והגדרות</a>.')}</div>
         </div>
@@ -1797,6 +1809,12 @@ const actions = {
     const v = $("#user-install-link").value;
     if (!v) { toast(t("לחץ קודם 'הפעל וקבל קישור'."), "error"); return; }
     try { await navigator.clipboard.writeText(v); toast("הועתק", "ok"); } catch { toast(v, "ok"); }
+  },
+  async "make-backup"(btn) {
+    await guarded(btn, async () => {
+      const res = await api("POST", "/backup");
+      toast(t("הגיבוי נשמר: {path}", { path: res.path }), "ok");
+    });
   },
   async "copy-invite"() {
     try { await navigator.clipboard.writeText(S.invite.url); toast("הועתק", "ok"); }

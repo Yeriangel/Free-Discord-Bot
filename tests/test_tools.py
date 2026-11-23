@@ -305,6 +305,41 @@ def test_name_lookups_and_gif_sources():
     assert tools.media_of(msg) is None
 
 
+def test_roblox_links_and_audio_files():
+    assert tools.roblox_asset_id("https://www.roblox.com/catalog/7001843110/Butterfly-ripped") == "7001843110"
+    assert tools.roblox_asset_id("https://create.roblox.com/store/asset/1837849285/Night-Vision") == "1837849285"
+    assert tools.roblox_asset_id("https://www.roblox.com/library/9046863960/x") == "9046863960"
+    assert tools.roblox_asset_id("rbxassetid://123456") == "123456" and tools.roblox_asset_id("1837849285") == "1837849285"
+    assert tools.roblox_asset_id("hello") is None
+    assert tools.audio_ext(b"OggS....") == "ogg" and tools.audio_ext(b"ID3\x04...") == "mp3"
+    assert tools.audio_ext(b"RIFF\x00\x00\x00\x00WAVEfmt ") == "wav" and tools.audio_ext(b"<html>") is None
+
+
+def test_allowed_users_and_default_modules():
+    import tempfile
+
+    from botd.store import DEFAULT_ON_MODULES, Store, may_talk
+
+    assert may_talk({"allowed_user_id": ""}, "5") and not may_talk({"allowed_user_id": "111111111111111"}, "5")
+    with tempfile.TemporaryDirectory() as tmp:
+        store = Store(Path(tmp) / "t.sqlite3")
+        ids = ", ".join(str(100000000000000000 + i) for i in range(15))
+        assert len(store.update_settings({"allowed_user_id": ids})["allowed_user_id"].split(",")) == 15
+        for bad in (ids + ", 200000000000000000", "123"):
+            try:
+                store.update_settings({"allowed_user_id": bad})
+                raise AssertionError("should fail: " + bad[-20:])
+            except ValueError:
+                pass
+        assert store.update_settings({"allowed_user_id": ""})["allowed_user_id"] == ""
+        assert store.get_settings()["creator_anonymous"] is True
+        store.upsert_guild("111111111111111111", "G")
+        assert DEFAULT_ON_MODULES["tools"] and store.module_enabled("111111111111111111", "tools")
+        store.set_module("111111111111111111", "tools", False)
+        assert not store.module_enabled("111111111111111111", "tools")
+        store.close() if hasattr(store, "close") else None
+
+
 def test_english_time_zone_names():
     import re
 
@@ -320,7 +355,7 @@ def test_english_time_zone_names():
 
 def test_commands_install_everywhere():
     names = {c.name: c for c in tools.Tools.__cog_app_commands__}
-    assert set(names) == {"roblox-user", "pokedex", "morse", "binary", "qr", "gif", "opacity", "file-format", "seed", "pfp", "time", "roblox-cloth", "clear"}
+    assert set(names) == {"roblox-user", "pokedex", "morse", "binary", "qr", "gif", "opacity", "file-format", "seed", "pfp", "time", "roblox-cloth", "clear", "roblox-audio"}
     for c in names.values():
         if c.name == "clear":  # deletes the bot's own messages: only where the bot itself is
             assert c.allowed_installs.guild and not c.allowed_installs.user

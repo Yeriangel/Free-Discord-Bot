@@ -91,7 +91,40 @@ def wait_for_old_service(port: int, timeout: float = 40.0) -> bool:
     return False
 
 
+def print_url() -> int:
+    """python -m botd url  -> the dashboard link of the running service (on a server: open it through an SSH tunnel)."""
+    session = read_session()
+    if not session_alive(session):
+        print("The bot service is not running.")
+        return 1
+    print(f"http://127.0.0.1:{session['port']}/#token={session['token']}")
+    return 0
+
+
+def import_backup(path: str) -> int:
+    """python -m botd import backup.zip  -> puts the settings from the app's backup into this machine's data folder."""
+    import zipfile
+
+    if session_alive(read_session()):
+        print("Stop the bot service first, then import.")
+        return 1
+    with zipfile.ZipFile(path) as zf:
+        if "botd.sqlite3" not in zf.namelist():
+            print("This is not a Free Discord Bot backup.")
+            return 1
+        target = paths.db_file()
+        if target.exists():
+            target.replace(target.with_suffix(".before-import"))
+        target.write_bytes(zf.read("botd.sqlite3"))
+    print(f"Settings imported into {target}")
+    return 0
+
+
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "url":
+        return print_url()
+    if len(sys.argv) > 2 and sys.argv[1] == "import":
+        return import_backup(sys.argv[2])
     takeover = os.environ.pop("BOTD_TAKEOVER", "") == "1"
     if takeover:
         wanted = int(os.environ.get("BOTD_PORT") or 0)
@@ -118,8 +151,9 @@ def main() -> int:
             server.should_exit = True
 
     app = create_app(manager, store, token, port, request_shutdown)
+    # BOTD_HOST=0.0.0.0 only inside Docker (the port is published to 127.0.0.1 of the server, see HOSTING.md)
     config = uvicorn.Config(
-        app, host="127.0.0.1", port=port, access_log=False, log_config=None, lifespan="on",
+        app, host=os.environ.get("BOTD_HOST", "127.0.0.1"), port=port, access_log=False, log_config=None, lifespan="on",
         timeout_graceful_shutdown=5,  # an old app window's live connection must not keep the service alive
     )
     server = uvicorn.Server(config)

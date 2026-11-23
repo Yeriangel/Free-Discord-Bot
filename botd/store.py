@@ -19,7 +19,21 @@ DEFAULT_SETTINGS = {
     "ui_lang": "he",
     "presence": {"status": "online", "activity": "none", "text": "", "url": ""},
     "appearance": {},
+    "creator_anonymous": True,  # the AI is not told who created the bot, and leaves them out of member lists
 }
+MAX_ALLOWED_USERS = 15
+# modules that are on in a server until someone turns them off there
+DEFAULT_ON_MODULES = {"tools": True}
+
+
+def allowed_user_ids(settings: dict) -> set[str]:
+    """The users who may talk to the AI. Empty set = everyone."""
+    return {x for x in re.split(r"[\s,;]+", str(settings.get("allowed_user_id") or "")) if x}
+
+
+def may_talk(settings: dict, user_id) -> bool:
+    allowed = allowed_user_ids(settings)
+    return not allowed or str(user_id) in allowed
 
 PRESENCE_STATUSES = ("online", "idle", "dnd", "invisible")
 ACTIVITY_TYPES = ("none", "playing", "streaming", "listening", "watching", "competing", "custom")
@@ -113,11 +127,18 @@ class Store(FeatureStoreMixin):
 
     def update_settings(self, changes: dict) -> dict:
         clean = {k: v for k, v in changes.items() if k in DEFAULT_SETTINGS}
-        for key in ("allowed_user_id", "allowed_channel_id"):
-            if key in clean:
-                clean[key] = str(clean[key] or "").strip()
-                if not valid_snowflake(clean[key]):
-                    raise ValueError(tr("{key}: מזהה דיסקורד הוא מספר של 15–21 ספרות", key=key))
+        if "allowed_user_id" in clean:
+            ids = list(dict.fromkeys(x for x in re.split(r"[\s,;]+", str(clean["allowed_user_id"] or "")) if x))
+            bad = [x for x in ids if not _SNOWFLAKE.match(x)]
+            if bad:
+                raise ValueError(tr("מזהה דיסקורד הוא מספר של 15–21 ספרות: {bad}", bad=", ".join(bad[:3])))
+            if len(ids) > MAX_ALLOWED_USERS:
+                raise ValueError(tr("אפשר עד {max} משתמשים מורשים.", max=MAX_ALLOWED_USERS))
+            clean["allowed_user_id"] = ",".join(ids)
+        if "allowed_channel_id" in clean:
+            clean["allowed_channel_id"] = str(clean["allowed_channel_id"] or "").strip()
+            if not valid_snowflake(clean["allowed_channel_id"]):
+                raise ValueError(tr("{key}: מזהה דיסקורד הוא מספר של 15–21 ספרות", key="allowed_channel_id"))
         if "ui_lang" in clean:
             from .i18n import set_ui_lang, valid_lang
             if not valid_lang(clean["ui_lang"]):
@@ -181,7 +202,7 @@ class Store(FeatureStoreMixin):
             "id": row["id"],
             "name": row["name"],
             "icon": row["icon"],
-            "modules": json.loads(row["modules"]),
+            "modules": {**DEFAULT_ON_MODULES, **json.loads(row["modules"])},
             "config": json.loads(row["config"]),
         }
 
@@ -203,7 +224,7 @@ class Store(FeatureStoreMixin):
     def module_enabled(self, gid: str, key: str) -> bool:
         with self._lock:
             guild = self._cache.get(gid) or self.get_guild(gid)
-            return bool(guild and guild["modules"].get(key))
+            return bool(guild and guild["modules"].get(key, DEFAULT_ON_MODULES.get(key, False)))
 
     def raw_config(self, gid: str, key: str) -> dict:
         guild = self.get_guild(gid)

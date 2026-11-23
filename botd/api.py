@@ -2,6 +2,7 @@
 
 from .i18n import tr
 import asyncio
+import sys
 import hmac
 import logging
 from contextlib import asynccontextmanager
@@ -39,6 +40,7 @@ class SettingsIn(BaseModel):
     autostart_bot: bool | None = None
     start_with_windows: bool | None = None
     appearance: dict | None = None
+    creator_anonymous: bool | None = None
 
 
 class ProfileIn(BaseModel):
@@ -123,7 +125,10 @@ def create_app(
         bus.attach(asyncio.get_running_loop())
         log.info(tr("שירות הבוט עלה (גרסה %s)"), __version__)
         watcher = asyncio.create_task(watch_for_replacement())
-        if store.get_settings()["autostart_bot"] and secrets_store.get("bot_token"):
+        import os
+
+        autostart = store.get_settings()["autostart_bot"] or os.environ.get("BOTD_AUTOSTART") == "1"  # servers: always on
+        if autostart and secrets_store.get("bot_token"):
             try:
                 await manager.start()
             except ValueError as exc:
@@ -262,6 +267,40 @@ def create_app(
             raise err(400, tr("דיסקורד לא איפשר להפעיל אוטומטית. בוטים ביותר מ-100 שרתים צריכים אישור מדיסקורד. הפעל ידנית ב-Developer Portal, בלשונית Bot."),
                       portal=True)
         return manager.status()
+
+    @app.post("/api/backup")
+    async def make_backup():
+        """A zip with all settings and data (no keys), for moving the bot to a server. Saved in Downloads."""
+        import datetime as dt
+        import os
+        import sqlite3
+        import tempfile
+        import zipfile
+
+        from . import paths
+
+        folder = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Downloads"
+        if not folder.is_dir():
+            folder = paths.data_dir()
+        target = folder / f"FreeDiscordBot-backup-{dt.datetime.now():%Y-%m-%d-%H%M}.zip"
+        with tempfile.TemporaryDirectory() as tmp:
+            copy = Path(tmp) / "botd.sqlite3"
+            src = sqlite3.connect(paths.db_file())
+            dst = sqlite3.connect(copy)
+            with dst:
+                src.backup(dst)  # a consistent copy even while the bot is running
+            src.close()
+            dst.close()
+            with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.write(copy, "botd.sqlite3")
+                zf.writestr("README.txt", "Free Discord Bot backup: settings and data of every server. No keys or tokens.\n"
+                                          "On the server: python -m botd import <this file>  (see HOSTING.md)\n")
+        log.info(tr("נשמר גיבוי של ההגדרות: %s"), target)
+        if sys.platform == "win32" and os.environ.get("BOTD_REVEAL", "1") != "0":  # show the file in Explorer
+            import subprocess
+
+            subprocess.Popen(["explorer", "/select,", str(target)])
+        return {"path": str(target)}
 
     @app.post("/api/user-install")
     async def user_install():

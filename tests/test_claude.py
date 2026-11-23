@@ -29,7 +29,9 @@ def test_should_respond():
                 reply_to_bot=False, allowed_user=USER, allowed_channel="", reply_without_mention=False)
     assert should_respond(**base)
     assert not should_respond(**{**base, "author_id": "999999999999999999"})   # someone else
-    assert not should_respond(**{**base, "allowed_user": ""})                  # no allowed user = nobody
+    assert should_respond(**{**base, "author_id": "999999999999999999", "allowed_user": ""})  # empty list = everyone
+    assert should_respond(**{**base, "author_id": "999999999999999999", "allowed_user": f"{USER},999999999999999999"})  # in the list
+    assert not should_respond(**{**base, "author_id": "888888888888888888", "allowed_user": f"{USER},999999999999999999"})
     assert should_respond(**{**base, "is_dm": True, "mentioned": False})       # DM
     assert not should_respond(**{**base, "mentioned": False})                  # no mention
     assert should_respond(**{**base, "mentioned": False, "reply_to_bot": True})
