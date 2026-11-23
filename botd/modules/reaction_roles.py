@@ -82,6 +82,56 @@ class ReactionRoles(commands.Cog):
             except discord.HTTPException as exc:
                 log.warning(tr("הסרת תפקיד נכשלה: %s"), exc.text or exc.status)
 
+    # ---- catch up after the bot was offline -------------------------------------------------------------------------
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        """Reactions added while the bot was offline: everyone who reacted and does not have the role yet gets it now."""
+        import time
+
+        if time.time() - getattr(self, "_last_catch_up", 0) < 300:
+            return
+        self._last_catch_up = time.time()
+        for guild in list(self.bot.guilds):
+            try:
+                given = await self.catch_up(guild)
+            except Exception:  # noqa: BLE001 - one server must not stop the others
+                log.exception("reaction roles catch-up")
+                continue
+            if given:
+                log.info(tr("תפקידים לפי ריאקשן: הושלמו %d תפקידים שחברים בחרו כשהבוט היה כבוי (שרת %s)"), given, guild.name)
+
+    async def catch_up(self, guild: discord.Guild) -> int:
+        if not self.bot.cfg(guild, "reaction_roles"):
+            return 0
+        given = 0
+        for group in self._groups(str(guild.id)):
+            if group.get("mode") == "buttons":
+                continue  # a button pressed while the bot is off fails on the spot; there is nothing to recover
+            channel = text_channel(guild, group.get("channel_id", ""))
+            if channel is None:
+                continue
+            try:
+                message = await channel.fetch_message(int(group["message_id"]))
+            except (discord.HTTPException, ValueError, KeyError):
+                continue
+            for reaction in message.reactions:
+                pair = next((p for p in group.get("pairs", []) if p.get("emoji") and emoji_key(p["emoji"]) == emoji_key(reaction.emoji)), None)
+                role = guild.get_role(int(pair["role_id"])) if pair and str(pair.get("role_id", "")).isdigit() else None
+                if role is None or not can_manage_role(guild, role):
+                    continue
+                async for user in reaction.users(limit=1000):
+                    if user.bot:
+                        continue
+                    member = user if isinstance(user, discord.Member) else guild.get_member(user.id)
+                    if member is None or role in member.roles:
+                        continue
+                    try:
+                        await member.add_roles(role, reason=tr("תפקיד לפי ריאקשן", self.bot.lang(guild)))
+                        given += 1
+                    except discord.HTTPException:
+                        pass
+        return given
+
     # ---- buttons (mode "buttons"): clicking toggles the role -----------------------------------------------------
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction) -> None:
@@ -145,7 +195,8 @@ class ReactionRoles(commands.Cog):
             if key in seen:
                 raise ValueError(tr("האימוג'י {emoji} מופיע פעמיים", emoji=emoji or label))
             seen.add(key)
-            clean.append({"emoji": emoji, "label": label, "role_id": str(role.id), "role_name": role.name})
+            color = pair.get("color") if pair.get("color") in ("blue", "grey", "green", "red") else "blue"
+            clean.append({"emoji": emoji, "label": label, "role_id": str(role.id), "role_name": role.name, "color": color})
         color = str(data.get("color") or "").strip()
         return {"style": "embed" if data.get("style") == "embed" else "text", "mode": mode,
                 "title": str(data.get("title") or "").strip()[:256], "content": str(data.get("content") or "").strip(),
@@ -172,7 +223,9 @@ class ReactionRoles(commands.Cog):
         if group["mode"] == "buttons":
             view = discord.ui.View(timeout=None)
             for p in group["pairs"]:
-                view.add_item(discord.ui.Button(style=discord.ButtonStyle.primary, custom_id=f"rr:{p['role_id']}",
+                style = {"grey": discord.ButtonStyle.secondary, "green": discord.ButtonStyle.success,
+                         "red": discord.ButtonStyle.danger}.get(p.get("color"), discord.ButtonStyle.primary)
+                view.add_item(discord.ui.Button(style=style, custom_id=f"rr:{p['role_id']}",
                                                 emoji=p["emoji"] or None, label=p.get("label") or None))
         return text, embed, view
 

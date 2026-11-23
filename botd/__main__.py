@@ -165,13 +165,11 @@ def main() -> int:
 
     settings = store.get_settings()
     if mobile.enabled(settings):
-        phone_host = os.environ.get("BOTD_MOBILE_HOST") or mobile.tailscale_ip()
-        if phone_host:
-            phone_server = uvicorn.Server(uvicorn.Config(
-                app, host=phone_host, port=mobile.mobile_port(settings), access_log=False, log_config=None,
-                lifespan="off", timeout_graceful_shutdown=5))
-        else:
-            logging.getLogger("botd").warning("Phone access is on, but Tailscale is not running: phones cannot connect")
+        # Listens on every network address; each request is then checked: only paired phones, and only from your
+        # Tailscale network (or the home Wi-Fi when you allowed that). Tailscale can start later, no restart needed.
+        phone_server = uvicorn.Server(uvicorn.Config(
+            app, host=os.environ.get("BOTD_MOBILE_HOST") or "0.0.0.0", port=mobile.mobile_port(settings),
+            access_log=False, log_config=None, lifespan="off", timeout_graceful_shutdown=5))
 
     session_path = paths.session_file()
     tmp = session_path.with_suffix(".tmp")

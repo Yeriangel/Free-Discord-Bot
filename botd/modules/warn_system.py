@@ -132,12 +132,14 @@ class Warnings(commands.Cog):
             return await interaction.response.send_message(error, ephemeral=True)
         if member.bot or member.id == interaction.user.id:
             return await interaction.response.send_message(tr("אי אפשר לתת אזהרה לבוט או לעצמך.", lang), ephemeral=True)
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         wid, total, action = await self.add_warning(interaction.guild, member, reason, interaction.user)
-        text = tr("⚠️ אזהרה #{id} ניתנה ל-{user}. סך הכל: {n}.", lang, id=wid, user=member, n=total)
+        # said in the channel, so the member (and everyone) sees the warning and the reason
+        text = tr("⚠️ {user} קיבל אזהרה (#{id}). סיבה: {reason}. סך הכל: {n}.", lang, id=wid, user=member.mention,
+                  reason=discord.utils.escape_markdown(reason[:500]), n=total)
         if action:
             text += "\n" + tr("פעולה אוטומטית: {action}", lang, action=action)
-        await interaction.followup.send(text, ephemeral=True)
+        await interaction.followup.send(text, allowed_mentions=discord.AllowedMentions(users=[member], roles=False, everyone=False))
 
     @app_commands.command(name="warnings", description=N_("רשימת האזהרות של משתמש"))
     @app_commands.guild_only()

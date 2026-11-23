@@ -32,8 +32,13 @@ def star_embed(message: discord.Message, count: int, emoji: str, lang: str) -> d
     embed = discord.Embed(description=(message.content or "")[:4000] or None, color=themed(lang, 0xF5C542), timestamp=message.created_at)
     embed.set_author(name=message.author.display_name, icon_url=message.author.display_avatar.url)
     image = next((a.url for a in message.attachments if (a.content_type or "").startswith("image/")), None)
+    if not image:  # a picture or GIF sent as a link
+        image = next((e.thumbnail.url or e.url for e in message.embeds if e.type in ("image", "gifv") and (e.thumbnail or e.url)), None)
     if image:
         embed.set_image(url=image)
+    others = [a for a in message.attachments if not (a.content_type or "").startswith("image/")]
+    if others:
+        embed.add_field(name=tr("קבצים", lang), value="\n".join(f"[{a.filename}]({a.url})" for a in others[:5])[:1024], inline=False)
     embed.add_field(name=tr("מקור", lang), value=f"[{tr('מעבר להודעה', lang)}]({message.jump_url})")
     embed.set_footer(text=f"{emoji} {count}")
     return embed

@@ -35,11 +35,24 @@ NEW_MODULES = {m["key"]: m for m in [
         _f("panel_title", "text", "כותרת", "צריך עזרה? 🎫", max=200),
         _f("panel_message", "textarea", "טקסט ההודעה", "לחץ על הכפתור כדי לפתוח כרטיס פרטי עם הצוות."),
         _f("button_label", "text", "טקסט הכפתור", "פתח כרטיס", max=80),
-        _f("support_role_ids", "roles", "תפקידי צוות שמצטרפים לכרטיסים", []),
+        _f("button_emoji", "emoji", "אימוג'י בכפתור", "🎫", max=80),
+        _f("button_color", "select", "צבע הכפתור", "blue", options=[["blue", "כחול"], ["grey", "אפור"], ["green", "ירוק"], ["red", "אדום"]]),
+        _f("types", "list", "סוגי כרטיסים (כפתור לכל סוג, לא חובה)", [], max_items=10, item_fields=[
+            _f("emoji", "emoji", "אימוג'י", "", max=80),
+            _f("label", "text", "שם הסוג (הטקסט בכפתור)", "", required=True, max=80),
+            _f("color", "select", "צבע", "blue", options=[["blue", "כחול"], ["grey", "אפור"], ["green", "ירוק"], ["red", "אדום"]]),
+            _f("role_id", "role", "הצוות של הסוג הזה", ""),
+            _f("welcome", "text", "הודעת פתיחה לסוג הזה (לא חובה)", "", max=1000),
+        ]),
+        _f("support_role_ids", "roles", "תפקידי צוות שמצטרפים לכל הכרטיסים", []),
         _f("welcome_message", "textarea", "הודעה בתוך כרטיס חדש", "שלום {user}! תאר את הבקשה שלך, והצוות יענה בהקדם.",
-           hint="{user} מי שפתח · {number} מספר הכרטיס"),
+           hint="{user} מי שפתח · {number} מספר הכרטיס · {type} סוג הכרטיס"),
         _f("max_open", "number", "כמה כרטיסים פתוחים מותר לכל משתמש", 1, min=1, max=5),
         _f("log_channel_id", "channel", "ערוץ לוג לכרטיסים (לא חובה)", ""),
+        _f("close_emoji", "emoji", "אימוג'י בכפתור הסגירה", "🔒", max=80),
+        _f("close_color", "select", "צבע כפתור הסגירה", "red", options=[["blue", "כחול"], ["grey", "אפור"], ["green", "ירוק"], ["red", "אדום"]]),
+        _f("dm_transcript", "bool", "לשלוח למי שפתח את הכרטיס את כל השיחה כקובץ טקסט, בהודעה פרטית, כשהכרטיס נסגר", False),
+        _f("log_transcript", "bool", "לשלוח את תיעוד השיחה גם לערוץ הלוג", False),
     ], permissions=["create_private_threads", "send_messages_in_threads", "manage_threads"], commands=["/ticket-panel", "/ticket-close"]),
 
     _m("suggestions", "server_management", "תיבת הצעות", "הצעות עם הצבעה ושרשור דיון", [
@@ -134,12 +147,18 @@ NEW_MODULES = {m["key"]: m for m in [
         _f("welcome_back", "bool", "להודיע כשמישהו חוזר", True),
     ], permissions=["manage_nicknames"], commands=["/afk"]),
 
-    _m("social_alerts", "social", "התראות רשתות", "YouTube, Twitch, Reddit ו-RSS", [
+    _m("social_alerts", "social", "התראות רשתות", "YouTube, Twitch, Kick, Reddit, Bluesky, Telegram ו-RSS", [
         _f("feeds", "list", "מקורות", [], max_items=25, item_fields=[
             _f("kind", "select", "רשת", "youtube", options=[
-                ["youtube", "YouTube"], ["twitch", "Twitch"], ["reddit", "Reddit"], ["rss", "RSS / אתר"]]),
+                ["youtube", "YouTube"], ["twitch", "Twitch"], ["kick", "Kick"], ["reddit", "Reddit"],
+                ["bluesky", "Bluesky"], ["telegram", "Telegram"], ["rss", "RSS / אתר"]]),
             _f("source", "text", "ערוץ / משתמש / קישור", "", required=True, max=300,
-               hint="YouTube: קישור לערוץ או ‎@handle · Twitch: שם משתמש או קישור לערוץ · Reddit: שם הסאב · RSS: קישור לפיד"),
+               hint="YouTube: קישור לערוץ או ‎@handle · Twitch / Kick: שם משתמש או קישור · Reddit: שם הסאב · Bluesky: שם המשתמש · Telegram: שם ערוץ ציבורי · RSS: קישור לפיד"),
+            _f("event", "select", "על מה להודיע", "new", options=[
+                ["new", "סרטון / פוסט חדש"], ["live", "עלה לשידור חי"], ["both", "גם וגם"]],
+               hint="שידור חי: YouTube, Twitch ו-Kick. ב-Twitch וב-Kick תמיד מודיעים על שידור חי"),
+            _f("style", "select", "איך להודיע", "full", options=[
+                ["full", "הודעה עם קישור ותצוגה מקדימה"], ["text", "רק הכרזה, בלי קישור"]]),
             _f("channel_id", "channel", "ערוץ ההתראות", "", required=True),
             _f("message", "text", "הודעה", "📣 {name}: {title}\n{url}", max=500, hint="{name} · {title} · {url}"),
             _f("role_id", "role", "תפקיד לתייג (לא חובה)", ""),

@@ -99,9 +99,9 @@ def test_validate_config():
         raise AssertionError("bad action")
     except ValueError:
         pass
-    rc = catalog.validate_config("restricted_channels", {"channels": [{"channel_id": "", "mode": "images"},
-                                                                      {"channel_id": "333333333333333333", "mode": "videos"}]})
-    assert rc["channels"] == [{"channel_id": "333333333333333333", "mode": "videos"}]  # empty row dropped
+    rc = catalog.validate_config("restricted_channels", {"channels": [{"channel_id": "", "blocked": ["text"]},
+                                                                      {"channel_id": "333333333333333333", "blocked": ["links", "x"]}]})
+    assert rc["channels"] == [{"channel_id": "333333333333333333", "blocked": ["links"]}]  # empty row dropped, unknown kind dropped
     kept = catalog.validate_config("reaction_roles", {"groups": []}, {"groups": [{"message_id": "1"}]})
     assert kept["groups"] == [{"message_id": "1"}]
 

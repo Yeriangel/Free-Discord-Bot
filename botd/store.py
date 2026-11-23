@@ -22,10 +22,12 @@ DEFAULT_SETTINGS = {
     "creator_anonymous": True,  # the AI is not told who created the bot, and leaves them out of member lists
     "mobile_enabled": False,    # phone access (Android app) through Tailscale
     "mobile_port": 8765,
+    "mobile_lan": False,        # also accept paired phones on the home Wi-Fi (no Tailscale needed)
 }
 MAX_ALLOWED_USERS = 15
 # modules that are on in a server until someone turns them off there
-DEFAULT_ON_MODULES = {"tools": True}
+# (moderation and warnings: their commands only work for members with the matching Discord permission)
+DEFAULT_ON_MODULES = {"tools": True, "mod_commands": True, "warnings": True}
 
 
 def allowed_user_ids(settings: dict) -> set[str]:

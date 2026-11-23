@@ -183,6 +183,7 @@ async def scenario():
     mc = Moderation(bot)
     inter = MagicMock()
     inter.guild, inter.user = g, inv
+    store.set_module(GID, "mod_commands", False)  # on by default; a server can turn it off
     assert "כבויות" in await mc._guard(inter, "kick_members", member(21, 3))
     store.set_module(GID, "mod_commands", True)
     assert await mc._guard(inter, "kick_members", member(21, 3)) is None

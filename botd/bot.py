@@ -100,6 +100,9 @@ class ManagedBot(commands.Bot):
             if opts.get("enabled") is False:
                 self.tree.remove_command(cmd.name)
             elif opts.get("name") and opts["name"] != cmd.name:
+                if self.tree.get_command(opts["name"]) is not None:  # the new name is another command's name
+                    log.warning("command /%s cannot be renamed to /%s: that name is taken", cmd.name, opts["name"])
+                    continue
                 self.tree.remove_command(cmd.name)
                 cmd.name = opts["name"]
                 self.tree.add_command(cmd)

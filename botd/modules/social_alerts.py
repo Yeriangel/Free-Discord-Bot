@@ -1,5 +1,6 @@
-"""Social alerts: new YouTube videos, Twitch streams going live, new Reddit posts and any RSS/Atom feed.
-TikTok and X (Twitter) are not supported: they have no free public feed or API."""
+"""Social alerts: new YouTube videos and live streams, Twitch and Kick streams going live, new Reddit, Bluesky and
+Telegram posts, and any RSS/Atom feed. Each alert can announce new posts, going live, or both, with or without a link.
+TikTok, Instagram and X (Twitter) are not supported: they block automatic reading and have no free feed or API."""
 
 from ..i18n import tr
 import logging
@@ -47,7 +48,8 @@ def parse_feed(xml_text: str) -> tuple[str, list[dict]]:
     title = _text(channel, "title")
     for it in channel.findall("item"):
         url = _text(it, "link")
-        items.append({"id": _text(it, "guid") or url or _text(it, "title"), "title": _text(it, "title"),
+        title_text = _text(it, "title") or " ".join(re.sub(r"<[^>]+>", "", _text(it, "description")).split())[:150]
+        items.append({"id": _text(it, "guid") or url or _text(it, "title"), "title": title_text,
                       "url": url, "author": _text(it, "author")})
     return title, items
 
@@ -88,6 +90,47 @@ def decapi_live(uptime_text: str) -> bool:
 
 def fill_alert(template: str, name: str, title: str, url: str) -> str:
     return template.replace("{name}", name).replace("{title}", title).replace("{url}", url)[:1900]
+
+
+LIVE_KINDS = ("twitch", "kick")          # only "went live"
+BOTH_KINDS = ("youtube",)                # new videos and/or live
+PLATFORM = {"twitch": ("Twitch", 0x9146FF), "kick": ("Kick", 0x53FC18), "youtube": ("YouTube", 0xFF0000)}
+TG_POST = re.compile(r'data-post="([\w]+/\d+)"')
+TG_TEXT = re.compile(r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', re.S)
+
+
+def wants(feed: dict, event: str) -> bool:
+    """Does this alert announce 'new' posts / going 'live'?"""
+    kind = feed["kind"]
+    if kind in LIVE_KINDS:
+        return event == "live"
+    if kind in BOTH_KINDS:
+        return (feed.get("event") or "new") in (event, "both")
+    return event == "new"
+
+
+def simple_name(source: str) -> str:
+    """'https://kick.com/Name?x', '@name' or 'name' -> 'name'."""
+    return source.strip().split("?")[0].rstrip("/").split("/")[-1].lstrip("@").lower()
+
+
+def bluesky_handle(source: str) -> str:
+    handle = simple_name(source)
+    return handle if "." in handle else handle + ".bsky.social"
+
+
+def parse_telegram(html_text: str, channel: str) -> list[dict]:
+    """Posts of a public Telegram channel from its web preview (t.me/s/name), newest first."""
+    import html as html_mod
+
+    ids = TG_POST.findall(html_text)
+    texts = TG_TEXT.findall(html_text)
+    items = []
+    for i, post in enumerate(ids):
+        raw = texts[i] if i < len(texts) and len(texts) == len(ids) else ""
+        text = html_mod.unescape(re.sub(r"<[^>]+>", " ", raw.replace("<br/>", "\n").replace("<br>", "\n"))).strip()
+        items.append({"id": post, "title": " ".join(text.split())[:200] or post, "url": f"https://t.me/{post}", "author": channel})
+    return list(reversed(items))
 
 
 class SocialAlerts(commands.Cog):
@@ -143,6 +186,19 @@ class SocialAlerts(commands.Cog):
             resp.raise_for_status()
             _title, items = parse_feed(resp.text)
             return f"r/{sub}", items
+        if kind == "bluesky":
+            handle = bluesky_handle(source)
+            resp = await client.get(f"https://bsky.app/profile/{quote(handle)}/rss")
+            resp.raise_for_status()
+            title, items = parse_feed(resp.text)
+            return title or handle, [{**i, "author": i["author"] or handle} for i in items]
+        if kind == "telegram":
+            channel = simple_name(source)
+            if not re.fullmatch(r"[a-z0-9_]{4,32}", channel):
+                raise ValueError(tr("שם ערוץ טלגרם לא תקין: {name}", name=channel))
+            resp = await client.get(f"https://t.me/s/{channel}")
+            resp.raise_for_status()
+            return channel, parse_telegram(resp.text, channel)
         if kind == "rss":
             if urlparse(source).scheme not in ("http", "https"):
                 raise ValueError(tr("קישור RSS צריך להתחיל ב-https://"))
@@ -176,6 +232,45 @@ class SocialAlerts(commands.Cog):
         return {"live": live, "name": login, "url": url, "title": title, "game": game, "stream_id": "",
                 "thumb": f"https://static-cdn.jtvnw.net/previews-ttv/live_user_{login}-640x360.jpg" if live else "", "via": "decapi"}
 
+    async def kick_status(self, client: httpx.AsyncClient, slug: str) -> dict:
+        if not re.fullmatch(r"[a-z0-9_-]{2,40}", slug):
+            raise ValueError(tr("שם ערוץ Kick לא תקין: {name}", name=slug))
+        resp = await client.get(f"https://kick.com/api/v2/channels/{slug}")
+        if resp.status_code == 404:
+            raise ValueError(tr("ערוץ Kick לא נמצא: {name}", name=slug))
+        resp.raise_for_status()
+        data = resp.json()
+        live = data.get("livestream") or None
+        name = (data.get("user") or {}).get("username") or slug
+        cats = (live or {}).get("categories") or []
+        thumb = ((live or {}).get("thumbnail") or {}).get("url", "") if isinstance((live or {}).get("thumbnail"), dict) else ""
+        return {"live": bool(live), "name": name, "url": f"https://kick.com/{slug}", "title": (live or {}).get("session_title", ""),
+                "game": cats[0].get("name", "") if cats else "", "stream_id": str((live or {}).get("id", "")),
+                "thumb": thumb, "viewers": (live or {}).get("viewer_count"), "via": "kick", "platform": "kick"}
+
+    async def youtube_live_status(self, client: httpx.AsyncClient, source: str) -> dict:
+        cid = youtube_channel_id(source) or self.bot.store.get_kv(f"ytid:{source}")
+        base = f"https://www.youtube.com/channel/{cid}" if cid else youtube_page_url(source).rstrip("/")
+        page = (await client.get(base + "/live")).text
+        live = '"isLive":true' in page
+        vid = re.search(r'<link rel="canonical" href="https://www\.youtube\.com/watch\?v=([\w-]{11})"', page)
+        title = re.search(r'<meta name="title" content="([^"]*)"', page)
+        owner = re.search(r'"ownerChannelName":"([^"]+)"', page)
+        video = vid.group(1) if vid and live else ""
+        import html as html_mod
+
+        return {"live": live and bool(video), "name": owner.group(1) if owner else source, "title": html_mod.unescape(title.group(1)) if title and live else "",
+                "url": f"https://www.youtube.com/watch?v={video}" if video else base, "game": "", "stream_id": video,
+                "thumb": f"https://i.ytimg.com/vi/{video}/hqdefault_live.jpg" if video else "", "via": "page", "platform": "youtube"}
+
+    async def live_status(self, client: httpx.AsyncClient, feed: dict) -> dict:
+        kind = feed["kind"]
+        if kind == "twitch":
+            return {**await self.twitch_status(client, twitch_login(feed["source"])), "platform": "twitch"}
+        if kind == "kick":
+            return await self.kick_status(client, simple_name(feed["source"]))
+        return await self.youtube_live_status(client, feed["source"].strip())
+
     async def twitch(self, client: httpx.AsyncClient, login: str) -> tuple[str, list[dict]]:
         cid, secret = secrets_store.get("twitch_client_id"), secrets_store.get("twitch_client_secret")
         return await self.twitch_helix(client, login, cid, secret)
@@ -206,8 +301,9 @@ class SocialAlerts(commands.Cog):
     def twitch_embed(self, info: dict, lang) -> discord.Embed:
         from .common import themed
 
-        embed = discord.Embed(title=info["title"] or info["url"], url=info["url"], color=themed(lang, 0x9146FF))
-        embed.set_author(name=tr("🔴 {name} בשידור חי ב-Twitch", lang, name=info["name"]), url=info["url"])
+        platform, color = PLATFORM.get(info.get("platform", "twitch"), PLATFORM["twitch"])
+        embed = discord.Embed(title=info["title"] or info["url"], url=info["url"], color=themed(lang, color))
+        embed.set_author(name=tr("🔴 {name} בשידור חי ב-{platform}", lang, name=info["name"], platform=platform), url=info["url"])
         if info.get("game"):
             embed.add_field(name=tr("משחק", lang), value=info["game"][:100])
         if info.get("viewers") is not None:
@@ -216,10 +312,10 @@ class SocialAlerts(commands.Cog):
             embed.set_image(url=f"{info['thumb']}?t={int(time.time())}")  # no stale cached preview
         return embed
 
-    async def check_twitch(self, client: httpx.AsyncClient, guild: discord.Guild, feed: dict) -> None:
-        login = twitch_login(feed["source"])
-        info = await self.twitch_status(client, login)
-        key = f"twitch_live:{guild.id}:{login}"
+    async def check_live(self, client: httpx.AsyncClient, guild: discord.Guild, feed: dict) -> None:
+        info = await self.live_status(client, feed)
+        slug = twitch_login(feed["source"]) if feed["kind"] == "twitch" else simple_name(feed["source"])
+        key = f"twitch_live:{guild.id}:{slug}" if feed["kind"] == "twitch" else f"live:{feed['kind']}:{guild.id}:{slug}"
         previous = self.bot.store.get_kv(key)
         marker = info["stream_id"] or ("live" if info["live"] else "")
         self.bot.store.set_kv(key, marker)
@@ -237,17 +333,23 @@ class SocialAlerts(commands.Cog):
         role = f"<@&{feed['role_id']}> " if feed.get("role_id") else ""
         mentions = discord.AllowedMentions(roles=[discord.Object(int(feed["role_id"]))]) if feed.get("role_id") \
             else discord.AllowedMentions.none()
-        text = prefix + role + fill_alert(feed["message"] or "{title}\n{url}", name, title, url)
+        if (feed.get("style") or "full") == "text":  # only announce: no link, no preview
+            body = fill_alert(feed["message"] or "{title}", name, title, "")
+            body = "\n".join(line.rstrip() for line in body.splitlines() if line.strip())
+            embed = None
+        else:
+            body = fill_alert(feed["message"] or "{title}\n{url}", name, title, url)
+        text = prefix + role + body
         await channel.send(text[:2000], embed=embed, allowed_mentions=mentions)
 
     async def preview(self, guild: discord.Guild, feed: dict, send: bool = False) -> str:
         """What the source shows right now (for the app's Test button). With send=True also posts a test alert."""
         async with httpx.AsyncClient(timeout=20, headers={"User-Agent": UA}, follow_redirects=True) as client:
-            if feed["kind"] == "twitch":
-                info = await self.twitch_status(client, twitch_login(feed["source"]))
+            if not wants(feed, "new"):
+                info = await self.live_status(client, feed)
                 text = (tr("🔴 בשידור עכשיו: {title} ({game})", title=info["title"], game=info["game"] or "-") if info["live"]
                         else tr("⚫ {name} לא בשידור כרגע. ההתראה תישלח כשהשידור יתחיל.", name=info["name"]))
-                if info["via"] == "decapi":
+                if info.get("via") == "decapi":
                     text += " " + tr("(בלי מפתחות Twitch, דרך decapi.me)")
                 if send:
                     sample = info if info["live"] else {**info, "title": tr("שידור לדוגמה"), "game": info["game"]}
@@ -263,8 +365,10 @@ class SocialAlerts(commands.Cog):
         return tr("{name}: נמצאו {n} פריטים. האחרון: {title}", name=name or feed["source"], n=len(items), title=top["title"][:150])
 
     async def check(self, client: httpx.AsyncClient, guild: discord.Guild, feed: dict) -> None:
-        if feed["kind"] == "twitch":
-            return await self.check_twitch(client, guild, feed)
+        if wants(feed, "live"):
+            await self.check_live(client, guild, feed)
+        if not wants(feed, "new"):
+            return
         name, items = await self.fetch(client, feed)
         self._status(guild, feed, True, tr("{n} פריטים, האחרון: {title}", n=len(items), title=(items[0]["title"] if items else "-")[:120]))
         key = f"feed_seen:{guild.id}:{feed['kind']}:{feed['source'].strip().lower()}"

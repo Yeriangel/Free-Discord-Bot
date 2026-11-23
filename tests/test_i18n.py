@@ -82,6 +82,7 @@ async def bot_language():
     inter = MagicMock()
     inter.guild = g
     inter.user = MagicMock(spec=discord.Member)
+    bot.store.set_module(str(g.id), "mod_commands", False)
     assert await mod._guard(inter, "kick_members") == "Moderation commands are off in this server. You can turn them on in the app."
 
     from botd.modules import Levels, Warnings  # noqa: F401

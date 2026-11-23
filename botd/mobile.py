@@ -59,6 +59,28 @@ def tailscale_ip() -> str | None:
     return None
 
 
+LAN_NETS = [ipaddress.ip_network(n) for n in ("192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12")]
+
+
+def is_lan(host: str | None) -> bool:
+    try:
+        ip = ipaddress.ip_address(host or "")
+    except ValueError:
+        return False
+    return any(ip in net for net in LAN_NETS)
+
+
+def lan_ip() -> str | None:
+    """This computer's address on the home network (192.168.x.x), or None."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.168.255.255", 9))  # no packet is sent; this only asks Windows which address it would use
+            ip = s.getsockname()[0]
+        return ip if is_lan(ip) else None
+    except OSError:
+        return None
+
+
 def _hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 

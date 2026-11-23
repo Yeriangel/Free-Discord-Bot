@@ -133,16 +133,17 @@ MODULES = [
     },
     {
         "key": "restricted_channels", "category": "essentials", "label": "ערוצים מוגבלים",
-        "description": "ערוצי 'תמונות בלבד', 'וידאו בלבד' או 'פקודות בלבד'. שאר ההודעות נמחקות.",
+        "description": "בוחרים לכל ערוץ מה אסור לשלוח בו: הודעות טקסט, קישורים, תמונות, סרטונים או פקודות.",
         "permissions": ["manage_messages"], "intents": ["message_content"], "status": "ready", "commands": [],
         "fields": [
             _f("channels", "list", "ערוצים", [], max_items=25, item_fields=[
                 _f("channel_id", "channel", "ערוץ", "", required=True),
-                _f("mode", "select", "מה מותר", "images", options=[
-                    ["images", "תמונות בלבד"], ["videos", "וידאו בלבד"], ["media", "תמונות או וידאו"],
-                    ["commands", "פקודות בלבד"]]),
+                _f("blocked", "flags", "לחץ על מה שאסור (אדום = אסור)", ["text", "links", "videos", "commands"], options=[
+                    ["text", "הודעות טקסט"], ["links", "קישורים"], ["images", "תמונות"], ["videos", "סרטונים"],
+                    ["commands", "פקודות"]]),
             ]),
-            _f("command_prefixes", "lines", "קידומות של פקודות", ["!"], hint="למצב 'פקודות בלבד'"),
+            _f("command_prefixes", "lines", "קידומות של פקודות", ["!"], hint="הודעה שמתחילה באחת מהן נחשבת פקודה"),
+            _f("exempt_mods", "bool", "לא לחול על מנהלים (מי שיש לו 'ניהול הודעות')", False),
             _f("reply_in_channel", "bool", "להציג הודעה קצרה בערוץ (נמחקת אחרי כמה שניות)", True),
             _f("notify_dm", "bool", "לשלוח לכותב הודעה פרטית עם הסבר", False),
         ],

@@ -95,15 +95,16 @@ def test_commands_and_look():
         from botd.modules import COGS
 
         store, bot = make_env()
-        store.set_kv("command_custom", {"rank": {"name": "level", "description": "Show your level"}, "poll": {"enabled": False}})
+        store.set_kv("command_custom", {"rank": {"name": "mylevel", "description": "Show your level"}, "poll": {"enabled": False},
+                                        "levels": {"name": "level"}})  # "level" is taken by /level: that rename is skipped
         for c in COGS:
             await bot.add_cog(c(bot))
         bot.apply_command_custom()
         bot._localize_commands()
         names = {c.name for c in bot.tree.get_commands()}
-        assert "level" in names and "rank" not in names and "poll" not in names, names
-        level = bot.tree.get_command("level")
-        assert level.description == "Show your level" and level.to_dict(bot.tree)["name"] == "level"
+        assert "mylevel" in names and "rank" not in names and "poll" not in names and "levels" in names, names
+        level = bot.tree.get_command("mylevel")
+        assert level.description == "Show your level" and level.to_dict(bot.tree)["name"] == "mylevel"
         for name in list(bot.cogs):
             await bot.remove_cog(name)
         store.close()

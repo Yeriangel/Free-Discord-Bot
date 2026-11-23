@@ -452,6 +452,32 @@ def test_reaction_roles_embed_buttons_and_edit():
     print("ok reaction roles: embed, buttons, server emoji, edit, toggle")
 
 
+def test_restricted_kinds_tickets_and_social_rules():
+    from botd.modules import restricted, social_alerts as sa, ticketing
+
+    k = restricted.message_kinds
+    assert k("hello", [], [], ["!"]) == {"text"} and k("see https://a.b/c", [], [], ["!"]) == {"links"}
+    assert k("caption", ["image/png"], [], ["!"]) == {"images"} and k("", ["video/mp4"], [], ["!"]) == {"videos"}
+    assert k("!rank", [], [], ["!"]) == {"commands"} and k("", [], [], ["!"], ["clip.MP4"]) == {"videos"}
+    assert restricted.blocked_of({"mode": "media"}) == ["text", "links", "commands"]
+    assert restricted.blocked_of({"blocked": ["links", "bogus"]}) == ["links"]
+    # ticket buttons: one per type, own color; text that is not an emoji is not used as one
+    view = ticketing.panel_view({"types": [{"emoji": "🛠️", "label": "Tech", "color": "green"}, {"emoji": "", "label": "Report", "color": "red"}]})
+    assert [(b.custom_id, b.label, b.style.name) for b in view.children] == [("ticket:open:0", "Tech", "success"), ("ticket:open:1", "Report", "danger")]
+    one = ticketing.panel_view({"button_label": "Open", "button_emoji": "hello", "button_color": "grey"}).children[0]
+    assert one.custom_id == "ticket:open" and one.emoji is None and one.style.name == "secondary"
+    assert ticketing.safe_emoji("<:x:123456789012345678>").id == 123456789012345678 and ticketing.safe_emoji("🎫") is not None
+    # social alerts: what each alert announces
+    assert sa.wants({"kind": "kick"}, "live") and not sa.wants({"kind": "kick"}, "new")
+    assert sa.wants({"kind": "youtube", "event": "both"}, "live") and sa.wants({"kind": "youtube", "event": "both"}, "new")
+    assert not sa.wants({"kind": "youtube"}, "live") and sa.wants({"kind": "telegram", "event": "live"}, "new")
+    assert sa.simple_name("https://kick.com/XQC?x=1") == "xqc" and sa.bluesky_handle("@yeri") == "yeri.bsky.social"
+    page = '<div data-post="chan/7"></div><div class="tgme_widget_message_text js-message_text" dir="auto">Hi <b>all</b><br/>new</div>'            '<div data-post="chan/8"></div><div class="tgme_widget_message_text" dir="auto">Second &amp; last</div>'
+    items = sa.parse_telegram(page, "chan")
+    assert items[0] == {"id": "chan/8", "title": "Second & last", "url": "https://t.me/chan/8", "author": "chan"} and items[1]["title"] == "Hi all new"
+    print("ok restricted kinds, ticket buttons, social rules")
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

@@ -43,6 +43,7 @@ class SettingsIn(BaseModel):
     creator_anonymous: bool | None = None
     mobile_enabled: bool | None = None
     mobile_port: int | None = None
+    mobile_lan: bool | None = None
 
 
 class ProfileIn(BaseModel):
@@ -78,6 +79,7 @@ class ConfigIn(BaseModel):
 class RRPair(BaseModel):
     emoji: str = ""
     label: str = ""
+    color: str = "blue"
     role_id: str
 
 
@@ -215,7 +217,9 @@ def create_app(
     allow_loopback_phone = _os.environ.get("BOTD_MOBILE_TEST") == "1"  # tests only
 
     def phone_client_ok(host: str | None) -> bool:
-        return mobile_mod.is_tailscale(host) or (allow_loopback_phone and host == "127.0.0.1")
+        if mobile_mod.is_tailscale(host) or (allow_loopback_phone and host == "127.0.0.1"):
+            return True
+        return mobile_mod.is_lan(host) and bool(store.get_settings().get("mobile_lan"))
 
     def from_phone(scope) -> bool:
         server = scope.get("server") or (None, None)
@@ -639,6 +643,8 @@ def create_app(
     # ---- phone access (Android app) -------------------------------------------------------------
     def _phone_base_url() -> str | None:
         ip = _os.environ.get("BOTD_MOBILE_HOST") or mobile_mod.tailscale_ip()
+        if not ip and store.get_settings().get("mobile_lan"):
+            ip = mobile_mod.lan_ip()  # home Wi-Fi
         settings = store.get_settings()
         return f"http://{ip}:{mobile_mod.mobile_port(settings)}" if ip else None
 
@@ -647,6 +653,7 @@ def create_app(
         settings = store.get_settings()
         return {"enabled": mobile_mod.enabled(settings), "running": phone_port is not None,
                 "port": mobile_mod.mobile_port(settings), "tailscale_ip": await asyncio.to_thread(mobile_mod.tailscale_ip),
+                "lan": bool(settings.get("mobile_lan")), "lan_ip": mobile_mod.lan_ip(),
                 "devices": phones.public_devices(), "discord_redirect": mobile_mod.DISCORD_REDIRECT}
 
     @app.post("/api/mobile/pair")
@@ -660,7 +667,7 @@ def create_app(
             raise err(409, tr("קודם הפעל גישה מהטלפון ולחץ 'החל עכשיו'."))
         base = await asyncio.to_thread(_phone_base_url)
         if not base:
-            raise err(409, tr("Tailscale לא פועל במחשב הזה. התקן אותו והתחבר, ואז נסה שוב."))
+            raise err(409, tr("Tailscale לא פועל במחשב הזה. התקן אותו והתחבר, או הפעל 'גם ב-Wi-Fi הביתי', ואז נסה שוב."))
         code = phones.new_code()
         link = mobile_mod.pair_link(base, code)
         png = qr.to_png(qr.encode(link), scale=6)
@@ -1029,6 +1036,7 @@ def create_app(
 
     class SendIn(BaseModel):
         content: str
+        reply_to: str = ""
 
     @app.post("/api/console")
     async def console(body: ConsoleIn):
@@ -1046,10 +1054,43 @@ def create_app(
             msgs = [m async for m in channel.history(limit=max(1, min(limit, 100)))]
         except discord.Forbidden:
             raise err(403, tr("לבוט אין הרשאה לקרוא את הערוץ הזה"))
+        def reply_of(m):
+            ref = m.reference.resolved if m.reference else None
+            if isinstance(ref, discord.Message):
+                return {"author": ref.author.display_name, "content": (ref.content or "")[:120]}
+            return None
+
+        def emoji_view(e):
+            if isinstance(e, str):
+                return {"text": e, "url": ""}
+            return {"text": str(e), "url": str(e.url) if getattr(e, "id", None) else ""}
+
         return [{"id": str(m.id), "author": m.author.display_name, "author_id": str(m.author.id), "bot": m.author.bot,
                  "avatar": m.author.display_avatar.with_size(64).url, "content": m.content,
                  "embeds": len(m.embeds), "attachments": [a.url for a in m.attachments][:4],
+                 "reply": reply_of(m),
+                 "reactions": [{**emoji_view(r.emoji), "count": r.count, "me": r.me} for r in m.reactions][:20],
                  "time": m.created_at.timestamp()} for m in reversed(msgs)]
+
+    @app.post("/api/guilds/{gid}/channels/{cid}/messages/{mid}/reactions")
+    async def channel_react(gid: str, cid: str, mid: str, body: dict):
+        """The bot adds a reaction to a message (or takes its own reaction back when it is already there)."""
+        guild = _live(gid)
+        channel = guild.get_channel(int(cid)) if cid.isdigit() else None
+        emoji = str(body.get("emoji") or "").strip()
+        if channel is None or not hasattr(channel, "get_partial_message") or not mid.isdigit():
+            raise err(404, tr("לא נמצא הערוץ"))
+        if not emoji:
+            raise err(400, tr("בחר אימוג'י"))
+        message = channel.get_partial_message(int(mid))
+        try:
+            if body.get("remove"):
+                await message.remove_reaction(emoji, guild.me)
+            else:
+                await message.add_reaction(emoji)
+        except discord.HTTPException as exc:
+            raise err(400, tr("דיסקורד דחה את הריאקשן: {error}", error=exc.text or exc.status))
+        return {"ok": True}
 
     @app.post("/api/guilds/{gid}/channels/{cid}/messages")
     async def channel_send(gid: str, cid: str, body: SendIn):
@@ -1060,8 +1101,12 @@ def create_app(
             raise err(404, tr("לא נמצא הערוץ"))
         if not text or len(text) > 2000:
             raise err(400, tr("ההודעה ריקה או ארוכה מ-2000 תווים"))
+        reference = None
+        if body.reply_to and body.reply_to.isdigit():  # answer a message, like "Reply" in Discord
+            reference = discord.MessageReference(message_id=int(body.reply_to), channel_id=channel.id, fail_if_not_exists=False)
         try:
-            msg = await channel.send(text, allowed_mentions=discord.AllowedMentions(everyone=False, roles=False, users=True))
+            msg = await channel.send(text, reference=reference, mention_author=False,
+                                     allowed_mentions=discord.AllowedMentions(everyone=False, roles=False, users=True))
         except discord.HTTPException as exc:
             raise err(400, tr("דיסקורד דחה את ההודעה: {error}", error=exc.text or exc.status))
         log.info(tr("נשלחה הודעה מהקונסול ל-#%s בשרת %s"), channel.name, guild.name)

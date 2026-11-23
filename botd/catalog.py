@@ -87,6 +87,9 @@ def merged_config(key: str, raw: dict | None, lang: str = "he") -> dict:
     for k, v in (raw or {}).items():
         if k in config:
             config[k] = v
+    if key == "restricted_channels":  # settings saved before "what is blocked" existed
+        from .modules.restricted import blocked_of
+        config["channels"] = [{"channel_id": c.get("channel_id", ""), "blocked": blocked_of(c)} for c in config["channels"]]
     return config
 
 
@@ -129,6 +132,11 @@ def _validate_field(field: dict, value):
         return value
     if t in ("channel", "role", "voice_channel", "category"):
         return _snowflake(value, label)
+    if t == "emoji":
+        return str(value or "").strip()[: field.get("max", 80)]
+    if t == "flags":
+        allowed = [o[0] for o in field["options"]]
+        return [v for v in allowed if v in (value or [])]
     if t in ("channels", "roles"):
         items = [_snowflake(v, label) for v in (value or []) if str(v or "").strip()]
         if len(items) > 50:
@@ -209,7 +217,7 @@ def _validate_field(field: dict, value):
             missing = [f for f in field["item_fields"] if f.get("required") and not str(item.get(f["key"], "")).strip()]
             if missing:
                 filled = any(str(item.get(f["key"], "")).strip() for f in field["item_fields"]
-                             if f["type"] not in ("select", "bool", "number"))
+                             if f["type"] not in ("select", "bool", "number", "flags"))
                 if not filled:
                     continue  # an empty row is just ignored
                 raise ValueError(tr("{label}: בשורה {n} חסר '{field}'", label=label, n=len(out) + 1,

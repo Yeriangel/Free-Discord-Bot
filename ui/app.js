@@ -439,6 +439,11 @@ function viewPhoneCard() {
         <li>${esc(t("מפעילים כאן, לוחצים 'חבר טלפון' וסורקים את הקוד עם המצלמה של הטלפון."))}</li>
       </ol>
       ${toggleRow("mobile_enabled", t("גישה מהטלפון"), m.enabled)}
+      ${toggleRow("mobile_lan", t("גם ב-Wi-Fi הביתי, בלי Tailscale (הטלפון והמחשב באותה רשת)"), m.lan)}
+      <div class="muted small">${m.tailscale_ip ? "✅ " + esc(t("הטלפון יתחבר דרך Tailscale: {ip}", { ip: m.tailscale_ip }))
+        : m.lan && m.lan_ip ? "✅ " + esc(t("הטלפון יתחבר דרך ה-Wi-Fi הביתי: {ip}", { ip: m.lan_ip }))
+        : "⚠️ " + esc(t("אין כרגע דרך להתחבר: הפעל את Tailscale במחשב, או סמן 'גם ב-Wi-Fi הביתי'."))}</div>
+      <div class="muted small">${esc(t("אם Windows שואל אם לאפשר ל-Python גישה לרשת, לחץ 'אפשר'. בלי זה הטלפון לא יצליח להתחבר."))}</div>
       <div class="row" style="flex-wrap:wrap;gap:8px">
         ${m.enabled && !m.running ? `<button class="btn btn-sm btn-primary" data-action="phone-apply">${esc(t("החל עכשיו"))}</button>
            <span class="muted small">${esc(t("השירות נטען מחדש לכמה שניות."))}</span>` : ""}
@@ -1009,6 +1014,9 @@ function simpleInput(f, value, attrs, o) {
     case "number": return `<input type="text" inputmode="numeric" class="ltr narrow" ${attrs} value="${esc(value)}">`;
     case "date": return `<input type="date" class="ltr" ${attrs} value="${esc(value)}">`;
     case "bool": return `<label class="switch"><input type="checkbox" ${attrs} ${value ? "checked" : ""}><span class="slider"></span></label>`;
+    case "emoji": return emojiInput(attrs, value);
+    case "flags": return `<div class="flags" ${attrs}>${f.options.map(([v, l]) =>
+      `<button type="button" class="flag ${(value || []).includes(v) ? "blocked" : ""}" data-flag="${esc(v)}">${(value || []).includes(v) ? "🚫" : "✓"} ${esc(l)}</button>`).join("")}</div>`;
     case "select": return `<select ${attrs}>${f.options.map(([v, l]) => `<option value="${esc(v)}" ${v === value ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
     case "channel": return channelPicker(attrs, value, o);
     case "voice_channel": return channelPicker(attrs, value, o, "ללא", "voice_channels");
@@ -1061,17 +1069,38 @@ function listRow(f, item, o) {
     </div>`;
 }
 
-const RR_EMOJIS = ["✅", "❌", "⭐", "🔥", "❤️", "💙", "💚", "💛", "💜", "🖤", "🤍", "🎮", "🎨", "🎵", "🎧", "📚", "💻", "⚽", "🏀",
-  "🎉", "🎁", "📢", "🔔", "🔒", "🛡️", "⚔️", "👑", "💎", "🌙", "☀️", "🌈", "🍕", "🐶", "🐱", "👍", "👎", "😀", "😎", "🤖", "👻",
-  "✡️", "✝️", "☪️", "🕉️", "☸️", "🧪", "🇮🇱", "🇺🇸", "🇬🇧", "🇷🇺", "🇸🇦", "♂️", "♀️", "⚧️", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"];
+const RR_EMOJIS = [["✅", "check yes ok v"], ["❌", "x no cross"], ["⭐", "star"], ["🔥", "fire hot"], ["❤️", "heart red love"],
+  ["💙", "heart blue"], ["💚", "heart green"], ["💛", "heart yellow"], ["💜", "heart purple"], ["🖤", "heart black"],
+  ["🤍", "heart white"], ["🎮", "game controller gaming"], ["🎨", "art paint"], ["🎵", "music note"], ["🎧", "headphones music"],
+  ["📚", "books study"], ["💻", "laptop computer code"], ["⚽", "football soccer ball"], ["🏀", "basketball ball"],
+  ["🎉", "party tada"], ["🎁", "gift present"], ["📢", "announce megaphone"], ["🔔", "bell notify"], ["🔒", "lock close"],
+  ["🔓", "unlock open"], ["🛡️", "shield mod"], ["⚔️", "swords fight"], ["👑", "crown king owner"], ["💎", "gem diamond vip"],
+  ["🌙", "moon night"], ["☀️", "sun day"], ["🌈", "rainbow"], ["🍕", "pizza food"], ["🐶", "dog"], ["🐱", "cat"],
+  ["👍", "thumbs up like"], ["👎", "thumbs down dislike"], ["😀", "smile happy"], ["😎", "cool sunglasses"], ["🤖", "robot bot"],
+  ["👻", "ghost"], ["✡️", "star of david jewish"], ["✝️", "cross christian"], ["☪️", "crescent muslim islam"], ["🕉️", "om hindu"],
+  ["☸️", "wheel buddhist"], ["🧪", "test tube science atheist"], ["🇮🇱", "israel flag"], ["🇺🇸", "usa america flag"],
+  ["🇬🇧", "uk britain flag"], ["🇷🇺", "russia flag"], ["🇸🇦", "saudi arabia flag"], ["♂️", "male man"], ["♀️", "female woman"],
+  ["⚧️", "transgender"], ["1️⃣", "one 1"], ["2️⃣", "two 2"], ["3️⃣", "three 3"], ["4️⃣", "four 4"], ["5️⃣", "five 5"],
+  ["🎫", "ticket"], ["🛠️", "tools tech support fix"], ["💬", "chat talk message"], ["❓", "question help"], ["💰", "money pay buy"],
+  ["🚨", "report alert siren"], ["🤝", "handshake partner"], ["📝", "note apply form"], ["🐛", "bug"], ["💡", "idea suggestion"],
+  ["🎓", "school student"], ["🏆", "trophy win"], ["📷", "camera photo"], ["🎬", "video movie"], ["🔞", "18 adult nsfw"],
+  ["🟢", "green circle"], ["🔴", "red circle"], ["🔵", "blue circle"], ["🟡", "yellow circle"], ["🟣", "purple circle"],
+  ["⚪", "white circle"], ["⚫", "black circle"], ["🟠", "orange circle"]];
+const BTN_COLORS = [["blue", "כחול"], ["grey", "אפור"], ["green", "ירוק"], ["red", "אדום"]];
+
+function emojiInput(attrs, value, cls = "") {
+  return `<div class="rr-emoji-wrap">
+      <input type="text" class="rr-emoji ${cls}" ${attrs} placeholder="😀" maxlength="80" value="${esc(value || "")}">
+      <button type="button" class="btn btn-sm btn-ghost" data-action="rr-emoji-pick" title="${esc(t("בחר אימוג'י"))}">😀▾</button>
+    </div>`;
+}
 
 function rrPairRow(objects, p = {}) {
   return `<div class="rr-pair">
-      <div class="rr-emoji-wrap">
-        <input type="text" class="rr-emoji" placeholder="😀" maxlength="80" value="${esc(p.emoji || "")}">
-        <button class="btn btn-sm btn-ghost" data-action="rr-emoji-pick" title="${esc(t("בחר אימוג'י"))}">😀▾</button>
-      </div>
+      ${emojiInput("", p.emoji)}
       <input type="text" class="rr-label" placeholder="${esc(t("טקסט בכפתור (לא חובה)"))}" maxlength="80" value="${esc(p.label || "")}">
+      <select class="rr-color btn-color-${esc(p.color || "blue")}" title="${esc(t("צבע הכפתור"))}">${BTN_COLORS.map(([v, l]) =>
+        `<option value="${v}" ${v === (p.color || "blue") ? "selected" : ""}>${esc(t(l))}</option>`).join("")}</select>
       ${rolePicker('class="rr-role"', p.role_id || "", objects)}
       <button class="btn btn-sm btn-ghost" data-action="row-remove" title="הסר">✕</button>
     </div>`;
@@ -1079,18 +1108,34 @@ function rrPairRow(objects, p = {}) {
 
 function rrEmojiPopup(anchor) {
   document.querySelectorAll(".rr-emoji-popup").forEach((x) => x.remove());
-  const emojis = (S.guild.objects && S.guild.objects.emojis) || [];
+  const emojis = (S.guild && S.guild.objects && S.guild.objects.emojis) || [];
+  const wrap = anchor.closest(".rr-emoji-wrap");
   const pop = document.createElement("div");
   pop.className = "rr-emoji-popup card";
-  pop.innerHTML = (emojis.length ? `<div class="muted small">${esc(t("האימוג'ים של השרת"))}</div>
-      <div class="rr-emoji-grid">${emojis.map((e) => `<button class="rr-emo" data-emo="${esc(e.text)}" title=":${esc(e.name)}:"><img src="${esc(e.url)}" alt=""></button>`).join("")}</div>` : "")
-    + `<div class="muted small">${esc(t("אימוג'ים רגילים (אפשר גם להדביק כל אימוג'י)"))}</div>
-      <div class="rr-emoji-grid">${RR_EMOJIS.map((e) => `<button class="rr-emo" data-emo="${e}">${e}</button>`).join("")}</div>`;
-  anchor.closest(".rr-emoji-wrap").appendChild(pop);
+  pop.innerHTML = `<input type="text" class="rr-emoji-search" placeholder="${esc(t("חיפוש אימוג'י…"))}" autocomplete="off">
+    <div class="rr-emoji-results"></div>`;
+  wrap.appendChild(pop);
+  const results = pop.querySelector(".rr-emoji-results"), search = pop.querySelector(".rr-emoji-search");
+  function draw() {
+    const q = search.value.trim().toLowerCase().replace(/^:|:$/g, "");
+    const server = emojis.filter((e) => !q || e.name.toLowerCase().includes(q));
+    const standard = RR_EMOJIS.filter(([e, words]) => !q || words.includes(q) || e === q);
+    results.innerHTML = (server.length ? `<div class="muted small">${esc(t("האימוג'ים של השרת"))}</div>
+        <div class="rr-emoji-grid">${server.map((e) => `<button type="button" class="rr-emo" data-emo="${esc(e.text)}" title=":${esc(e.name)}:"><img src="${esc(e.url)}" alt=""></button>`).join("")}</div>` : "")
+      + (standard.length ? `<div class="muted small">${esc(t("אימוג'ים רגילים (אפשר גם להדביק כל אימוג'י)"))}</div>
+        <div class="rr-emoji-grid">${standard.map(([e, words]) => `<button type="button" class="rr-emo" data-emo="${e}" title="${esc(words)}">${e}</button>`).join("")}</div>` : "")
+      || `<div class="muted small">${esc(t("לא נמצא. אפשר להדביק את האימוג'י ישר בתיבה."))}</div>`;
+  }
+  draw();
+  search.addEventListener("input", draw);
+  search.focus();
   pop.addEventListener("click", (ev) => {
     const b = ev.target.closest("[data-emo]");
     if (!b) return;
-    anchor.closest(".rr-emoji-wrap").querySelector(".rr-emoji").value = b.dataset.emo;
+    const input = wrap.querySelector(".rr-emoji");
+    input.value = b.dataset.emo;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
     pop.remove();
   });
   setTimeout(() => document.addEventListener("click", function off(ev) {
@@ -1101,7 +1146,7 @@ function rrEmojiPopup(anchor) {
 function readRrForm() {
   const pairs = [...document.querySelectorAll("#rr-pairs .rr-pair")]
     .map((r) => ({ emoji: r.querySelector(".rr-emoji").value.trim(), label: r.querySelector(".rr-label").value.trim(),
-                   role_id: r.querySelector(".rr-role").value }))
+                   color: r.querySelector(".rr-color").value, role_id: r.querySelector(".rr-role").value }))
     .filter((p) => p.emoji || p.label || p.role_id);
   return { channel_id: $("#rr-channel").value, style: $("#rr-style").value, mode: $("#rr-mode").value,
            title: $("#rr-title").value, color: $("#rr-color").value, content: $("#rr-content").value, pairs };
@@ -1674,7 +1719,7 @@ function collectModuleForm(key) {
   const form = document.querySelector(`[data-module-form="${key}"]`);
   const config = {};
   if (!form) return config;
-  const readCell = (el, type) => (type === "lines" ? el.value.split("\n").map((s) => s.trim()).filter(Boolean) : type === "bool" ? el.checked : el.value);
+  const readCell = (el, type) => (type === "flags" ? [...el.querySelectorAll(".flag.blocked")].map((b) => b.dataset.flag) : type === "lines" ? el.value.split("\n").map((s) => s.trim()).filter(Boolean) : type === "bool" ? el.checked : el.value);
   form.querySelectorAll("[data-field]").forEach((el) => {
     const f = el.dataset.field, t = el.dataset.ftype;
     if (t === "bool") config[f] = el.checked;
@@ -1980,6 +2025,9 @@ const actions = {
       toast(t("הגיבוי נשמר: {path}", { path: res.path }), "ok");
     });
   },
+  "chat-reply"(btn) { S.chatReply = btn.dataset.mid; renderChatReplyBar(); const i = $("#chat-input"); if (i) i.focus(); },
+  "chat-reply-cancel"() { S.chatReply = null; renderChatReplyBar(); },
+  "chat-react-toggle"(btn) { chatReact(btn.dataset.mid, btn.dataset.emoji, btn.dataset.me === "1"); },
   "nav-toggle"() { document.documentElement.classList.toggle("nav-open"); },
   async "phone-pair"(btn) {
     await guarded(btn, async () => {
@@ -2055,6 +2103,10 @@ const actions = {
       setDirty(false);
       render();
       toast("ההגדרות נשמרו", "ok");
+      if (!S.guild.modules[key]) {  // saved, but the module itself is off: the bot ignores it until it is turned on
+        const on = await confirmDialog(t("המודול כבוי"), t("ההגדרות נשמרו, אבל המודול כבוי בשרת הזה, אז הבוט לא משתמש בהן. להפעיל אותו עכשיו?"), t("הפעל את המודול"), false);
+        if (on) { S.guild = await api("PUT", `/guilds/${S.guildId}/modules/${key}`, { enabled: true }); render(); toast(t("המודול הופעל"), "ok"); }
+      }
     });
   },
   "cancel-module"() { setDirty(false); render(); },
@@ -2252,6 +2304,7 @@ function viewConsole() {
           <button class="btn btn-sm" data-action="chat-reload">${esc(t("רענן"))}</button>
         </div>
         <div id="chat-box" class="chat-box"><div class="muted small">${esc(t("בחר שרת וערוץ. הבוט צריך להיות מחובר."))}</div></div>
+        <div id="chat-reply-bar"></div>
         <div class="row" style="margin-top:10px;align-items:flex-end">
           <textarea id="chat-input" rows="2" class="grow" placeholder="${esc(t("כתוב הודעה בשם הבוט… (Enter שולח, Shift+Enter שורה חדשה)"))}"></textarea>
           <button class="btn btn-primary" data-action="chat-send">${esc(t("שלח"))}</button>
@@ -2303,18 +2356,46 @@ async function loadChatChannels(gid) {
 async function loadChatMessages(quiet) {
   const box = $("#chat-box");
   if (!box || !S.chatGuild || !S.chatChannel) return;
+  if (quiet && box.querySelector(".rr-emoji-popup")) return;  // an emoji picker is open: do not redraw under it
   let msgs;
   try { msgs = await api("GET", `/guilds/${S.chatGuild}/channels/${S.chatChannel}/messages?limit=40`); }
   catch (e) { if (!quiet) box.innerHTML = `<div class="muted small">${esc(errMessage(e))}</div>`; return; }
   const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+  S.chatMsgs = msgs;
   box.innerHTML = msgs.map((m) => `
-    <div class="chat-msg no-translate">
+    <div class="chat-msg no-translate" data-mid="${esc(m.id)}">
       <img class="chat-avatar" src="${esc(m.avatar)}" alt="">
-      <div class="grow"><div><b>${esc(m.author)}</b>${m.bot ? ` <span class="badge">BOT</span>` : ""} <span class="muted small">${new Date(m.time * 1000).toLocaleString()}</span></div>
+      <div class="grow">
+        ${m.reply ? `<div class="chat-reply-ref">↩ <b>${esc(m.reply.author)}</b> ${esc(m.reply.content)}</div>` : ""}
+        <div><b>${esc(m.author)}</b>${m.bot ? ` <span class="badge">BOT</span>` : ""} <span class="muted small">${new Date(m.time * 1000).toLocaleString()}</span></div>
         <div class="chat-text">${esc(m.content) || (m.embeds ? `<span class="muted">[embed]</span>` : "")}</div>
-        ${m.attachments.map((a) => `<a href="${esc(a)}" target="_blank" rel="noopener" class="small">📎 ${esc(a.split("/").pop().split("?")[0])}</a>`).join(" ")}</div>
+        ${m.attachments.map((a) => `<a href="${esc(a)}" target="_blank" rel="noopener" class="small">📎 ${esc(a.split("/").pop().split("?")[0])}</a>`).join(" ")}
+        ${m.reactions.length ? `<div class="chat-reactions">${m.reactions.map((r) =>
+          `<button class="chat-reaction ${r.me ? "mine" : ""}" data-action="chat-react-toggle" data-mid="${esc(m.id)}" data-emoji="${esc(r.text)}" data-me="${r.me ? 1 : 0}">${r.url ? `<img src="${esc(r.url)}" alt="">` : esc(r.text)} ${r.count}</button>`).join("")}</div>` : ""}
+      </div>
+      <div class="chat-tools">
+        <button class="btn btn-sm btn-ghost" data-action="chat-reply" data-mid="${esc(m.id)}" title="${esc(t("השב"))}">↩</button>
+        <span class="rr-emoji-wrap"><input type="hidden" class="rr-emoji chat-react-input" data-mid="${esc(m.id)}">
+          <button class="btn btn-sm btn-ghost" data-action="rr-emoji-pick" title="${esc(t("הוסף ריאקשן"))}">😀</button></span>
+      </div>
     </div>`).join("") || `<div class="muted small">${esc(t("אין הודעות בערוץ הזה."))}</div>`;
   if (atBottom || !quiet) box.scrollTop = box.scrollHeight;
+}
+
+function renderChatReplyBar() {
+  const bar = $("#chat-reply-bar");
+  if (!bar) return;
+  const m = S.chatReply && (S.chatMsgs || []).find((x) => x.id === S.chatReply);
+  bar.innerHTML = m ? `<div class="chat-reply-bar no-translate">↩ <span>${esc(t("משיב ל-{name}", { name: m.author }))}:</span>
+      <span class="muted grow">${esc((m.content || "").slice(0, 80))}</span>
+      <button class="btn btn-sm btn-ghost" data-action="chat-reply-cancel">✕</button></div>` : "";
+}
+
+async function chatReact(mid, emoji, remove) {
+  try {
+    await api("POST", `/guilds/${S.chatGuild}/channels/${S.chatChannel}/messages/${mid}/reactions`, { emoji, remove: !!remove });
+    loadChatMessages(true);
+  } catch (e) { toast(errMessage(e), "error"); }
 }
 
 async function sendChat() {
@@ -2323,8 +2404,9 @@ async function sendChat() {
   if (!text) return;
   if (!S.chatChannel) { toast("בחר ערוץ", "error"); return; }
   try {
-    await api("POST", `/guilds/${S.chatGuild}/channels/${S.chatChannel}/messages`, { content: text });
+    await api("POST", `/guilds/${S.chatGuild}/channels/${S.chatChannel}/messages`, { content: text, reply_to: S.chatReply || "" });
     input.value = "";
+    S.chatReply = null; renderChatReplyBar();
     loadChatMessages();
   } catch (e) { toast(errMessage(e), "error"); }
 }
@@ -2829,7 +2911,7 @@ document.addEventListener("change", async (e) => {
   }
   if (t.dataset.setting) {
     try { S.settings = await api("PUT", "/settings", { [t.dataset.setting]: t.checked }); toast("נשמר", "ok"); if (t.dataset.setting === "start_with_windows") render();
-      if (t.dataset.setting === "mobile_enabled") { S.mobile = null; render(); } }
+      if (t.dataset.setting === "mobile_enabled" || t.dataset.setting === "mobile_lan") { S.mobile = null; render(); } }
     catch (err) { t.checked = !t.checked; toast(errMessage(err), "error"); }
     return;
   }
@@ -2897,4 +2979,20 @@ boot();
 document.addEventListener("click", (e) => {
   if (document.documentElement.classList.contains("nav-open") && !e.target.closest(".sidebar") && !e.target.closest(".nav-toggle"))
     document.documentElement.classList.remove("nav-open");
+});
+
+/* flags (restricted channels): click what is NOT allowed, it turns red */
+document.addEventListener("click", (e) => {
+  const b = e.target.closest(".flag");
+  if (!b) return;
+  e.preventDefault();
+  b.classList.toggle("blocked");
+  b.textContent = (b.classList.contains("blocked") ? "🚫 " : "✓ ") + b.textContent.replace(/^(🚫|✓)\s*/, "");
+  if (typeof setDirty === "function") setDirty(true);
+});
+
+/* dashboard chat: an emoji picked next to a message becomes the bot's reaction */
+document.addEventListener("change", (e) => {
+  const el = e.target;
+  if (el.classList && el.classList.contains("chat-react-input") && el.value) { chatReact(el.dataset.mid, el.value); el.value = ""; }
 });

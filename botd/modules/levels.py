@@ -187,6 +187,44 @@ class Levels(commands.Cog):
         embed.set_footer(text=tr("עמוד {n}", cfg.get("_lang", "he"), n=page))
         await interaction.response.send_message(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
+    @app_commands.command(name="leaderboard", description=N_("מי ברמה הכי גבוהה בשרת, ולוח המובילים"))
+    @app_commands.guild_only()
+    async def leaderboard(self, interaction: discord.Interaction):
+        cfg = self._off(interaction)
+        lang = self.bot.lang(interaction.guild)
+        if not cfg:
+            return await interaction.response.send_message(tr("מערכת הרמות כבויה בשרת הזה.", lang), ephemeral=True)
+        rows = self.bot.store.leaderboard(str(interaction.guild_id), limit=10, offset=0)
+        if not rows:
+            return await interaction.response.send_message(tr("עוד אין אף אחד בלוח.", lang), ephemeral=True)
+        top = rows[0]
+        medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+        lines = [f"{medals.get(i, f'`#{i}`')} <@{r['user_id']}> · " + tr("רמה **{n}**", lang, n=level_info(r['xp'])[0]) + f" · {r['xp']:,} XP"
+                 for i, r in enumerate(rows, start=1)]
+        embed = discord.Embed(title=tr("🏆 לוח המובילים · {server}", lang, server=interaction.guild.name),
+                              description="\n".join(lines), color=parse_color(cfg["card_color"]))
+        leader = interaction.guild.get_member(int(top["user_id"]))
+        if leader is not None:
+            embed.set_thumbnail(url=leader.display_avatar.url)
+        await interaction.response.send_message(
+            tr("👑 {user} מוביל את השרת, ברמה **{level}** עם {xp} XP!", lang, user=f"<@{top['user_id']}>",
+               level=level_info(top["xp"])[0], xp=f"{top['xp']:,}"),
+            embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+    @app_commands.command(name="level", description=N_("הרמה של חבר בשרת"))
+    @app_commands.guild_only()
+    @app_commands.describe(user=N_("החבר (ריק = אתה)"))
+    async def level(self, interaction: discord.Interaction, user: discord.Member | None = None):
+        cfg = self._off(interaction)
+        lang = self.bot.lang(interaction.guild)
+        if not cfg:
+            return await interaction.response.send_message(tr("מערכת הרמות כבויה בשרת הזה.", lang), ephemeral=True)
+        member = user or interaction.user
+        xp = self.bot.store.get_xp(str(interaction.guild_id), str(member.id))["xp"]
+        await interaction.response.send_message(
+            tr("{user} ברמה **{level}** ({xp} XP).", lang, user=member.mention, level=level_info(xp)[0], xp=f"{xp:,}"),
+            embed=self._rank_embed(member, cfg), allowed_mentions=discord.AllowedMentions.none())
+
     async def _manual(self, interaction: discord.Interaction, member: discord.Member, delta: int):
         cfg = self._off(interaction)
         if not cfg:
