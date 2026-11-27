@@ -404,6 +404,36 @@ def test_tiktok_lookup_parsing():
     assert (st["likes"], st["videos"], st["followers"], st["verified"], st["bio"], st["avatar"]) == (999, 7, 10, True, "hi", "https://x/b.jpeg")
 
 
+def test_youtube_and_instagram_parsing():
+    q = tools.youtube_query
+    assert q("@MrBeast") == ("handle", "MrBeast") and q("mrbeast") == ("handle", "mrbeast")
+    assert q("https://www.youtube.com/@MrBeast/videos") == ("handle", "MrBeast")
+    assert q("https://youtube.com/channel/UCX6OQ3DkcsbYNE6H8uQQuVA") == ("id", "UCX6OQ3DkcsbYNE6H8uQQuVA")
+    assert q("UCX6OQ3DkcsbYNE6H8uQQuVA") == ("id", "UCX6OQ3DkcsbYNE6H8uQQuVA")
+    assert q("https://www.youtube.com/user/PewDiePie") == ("user", "PewDiePie") and q("a b!") is None
+    item = {"id": "UCX6", "snippet": {"title": "MrBeast", "customUrl": "@mrbeast", "country": "US", "description": "hi",
+                                      "publishedAt": "2012-02-20T00:43:50Z",
+                                      "thumbnails": {"default": {"url": "https://yt3/s88"}, "high": {"url": "https://yt3/s800"}}},
+            "statistics": {"subscriberCount": "400000000", "videoCount": "900", "viewCount": "90000000000", "hiddenSubscriberCount": False}}
+    st = tools.youtube_stats(item)
+    assert (st["handle"], st["country"], st["subscribers"], st["videos"], st["views"], st["avatar"], st["created"].year) == \
+        ("mrbeast", "US", 400000000, 900, 90000000000, "https://yt3/s800", 2012)
+    item["statistics"]["hiddenSubscriberCount"] = True
+    assert tools.youtube_stats(item)["subscribers"] is None
+    assert tools.instagram_name("@leomessi") == "leomessi" and tools.instagram_name("https://www.instagram.com/leomessi/?hl=en") == "leomessi"
+    assert tools.instagram_name("https://www.instagram.com/p/abc") is None and tools.instagram_name("bad name!") is None
+    data = {"data": {"pk": "427553890", "username": "leomessi", "full_name": "Leo Messi", "biography": "bio", "is_verified": True,
+                     "is_private": False, "media_count": 1300, "follower_count": 500000000, "following_count": 300,
+                     "profile_pic_url": "https://cdn/s150.jpg", "profile_pic_url_hd": "https://cdn/s1080.jpg", "category": "Athlete"}}
+    st = tools.instagram_stats(data)
+    assert (st["name"], st["followers"], st["following"], st["posts"], st["id"], st["avatar"], st["verified"], st["country"]) == \
+        ("leomessi", 500000000, 300, 1300, "427553890", "https://cdn/s1080.jpg", True, "")
+    graph = {"user": {"username": "x", "edge_followed_by": {"count": 5}, "edge_follow": {"count": 2},
+                      "edge_owner_to_timeline_media": {"count": 9}}}
+    st = tools.instagram_stats(graph)
+    assert (st["followers"], st["following"], st["posts"]) == (5, 2, 9)
+
+
 def test_english_time_zone_names():
     import re
 
@@ -419,7 +449,7 @@ def test_english_time_zone_names():
 
 def test_commands_install_everywhere():
     names = {c.name: c for c in tools.Tools.__cog_app_commands__}
-    assert set(names) == {"roblox-user", "pokedex", "morse", "binary", "qr", "gif", "opacity", "file-format", "seed", "pfp", "time", "roblox-cloth", "clear", "roblox-audio", "tiktok"}
+    assert set(names) == {"roblox-user", "pokedex", "morse", "binary", "qr", "gif", "opacity", "file-format", "seed", "pfp", "time", "roblox-cloth", "clear", "roblox-audio", "tiktok", "youtube", "instagram"}
     for c in names.values():
         if c.name == "clear":  # deletes the bot's own messages: only where the bot itself is
             assert c.allowed_installs.guild and not c.allowed_installs.user

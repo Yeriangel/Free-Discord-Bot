@@ -659,6 +659,14 @@ function viewConnection() {
       <p class="desc" style="margin:10px 0">${t('הפקודה /tiktok עובדת גם בלי מפתח (עוקבים, נעקבים, מדינה, מספר חשבון ותמונה). מפתח חינמי של <a href="https://www.eulerstream.com" target="_blank" rel="noopener">Euler Stream</a> מוסיף את סך הלייקים ופרטים נוספים: נרשמים באתר, יוצרים API Key ומדביקים כאן.')}</p>
       ${secretField("eulerstream_key", "Euler Stream API Key", "")}
     </details>
+    <details class="card section"><summary><b>${esc(t("YouTube (בשביל /youtube)"))}</b></summary>
+      <p class="desc" style="margin:10px 0">${t('מפתח חינמי, בלי כרטיס אשראי: נכנסים ל-<a href="https://console.cloud.google.com/apis/library/youtube.googleapis.com" target="_blank" rel="noopener">Google Cloud</a> עם חשבון Google, יוצרים פרויקט, לוחצים Enable על YouTube Data API v3, ואז Credentials ← Create credentials ← API key, ומדביקים כאן.')}</p>
+      ${secretField("youtube_api_key", "YouTube Data API Key", "")}
+    </details>
+    <details class="card section"><summary><b>${esc(t("Instagram (בשביל /instagram)"))}</b></summary>
+      <p class="desc" style="margin:10px 0">${t('מפתח חינמי, בלי כרטיס אשראי: נרשמים ב-<a href="https://www.instagapi.com/register" target="_blank" rel="noopener">InstaGapi</a>, מעתיקים את ה-API Key ומדביקים כאן. אינסטגרם לא משתף את מדינת החשבון, לכן היא לא מוצגת.')}</p>
+      ${secretField("instagram_api_key", "InstaGapi API Key", "")}
+    </details>
     ${viewAccounts()}
     <div class="card section">
       <h3>מי מורשה לדבר עם הבוט</h3>

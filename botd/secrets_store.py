@@ -13,7 +13,7 @@ from .redact import register_secret, unregister_secret
 
 SERVICE = os.environ.get("BOTD_KEYRING_SERVICE", "DiscordBotManager")
 NAMES = ("bot_token", "anthropic_key", "openai_key", "xai_key", "twitch_client_id", "twitch_client_secret",
-         "roblox_api_key", "discord_user_login", "eulerstream_key")
+         "roblox_api_key", "discord_user_login", "eulerstream_key", "youtube_api_key", "instagram_api_key")
 
 
 def _check(name: str) -> None:

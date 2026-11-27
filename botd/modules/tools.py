@@ -394,6 +394,113 @@ def tiktok_stats(data: dict) -> dict:
     }
 
 
+# ---- /youtube (official YouTube Data API v3, free key) and /instagram (InstaGapi, free key) ------------------------
+YT_API = "https://www.googleapis.com/youtube/v3"
+INSTAGAPI = "https://api.instagapi.com/api/user/info"
+YT_HANDLE_RE = re.compile(r"^[A-Za-z0-9._-]{3,30}$")
+YT_ID_RE = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
+IG_NAME_RE = re.compile(r"^[A-Za-z0-9._]{1,30}$")
+
+
+def youtube_query(text: str) -> tuple[str, str] | None:
+    """'@name', 'name', a channel ID or a youtube.com link -> ("id", UC...) / ("handle", name) / ("user", name)."""
+    t = (text or "").strip()
+    m = re.search(r"youtube\.com/(?:(channel)/(UC[A-Za-z0-9_-]{22})|@([A-Za-z0-9._-]+)|(?:c|user)/([A-Za-z0-9._-]+))", t)
+    if m:
+        if m.group(2):
+            return ("id", m.group(2))
+        if m.group(3):
+            return ("handle", m.group(3))
+        return ("user", m.group(4))
+    t = t.split("?")[0].strip().rstrip("/")
+    if YT_ID_RE.match(t):
+        return ("id", t)
+    name = t.lstrip("@")
+    return ("handle", name) if YT_HANDLE_RE.match(name) else None
+
+
+def youtube_stats(item: dict) -> dict:
+    sn, stats = item.get("snippet") or {}, item.get("statistics") or {}
+    thumbs = sn.get("thumbnails") or {}
+    avatar = next((thumbs[k]["url"] for k in ("high", "medium", "default") if (thumbs.get(k) or {}).get("url")), "")
+
+    def num(key):
+        try:
+            return int(stats[key])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    created = None
+    try:
+        created = dt.datetime.fromisoformat((sn.get("publishedAt") or "").replace("Z", "+00:00"))
+    except ValueError:
+        pass
+    return {"id": item.get("id", ""), "title": sn.get("title") or "", "handle": (sn.get("customUrl") or "").lstrip("@"),
+            "country": sn.get("country") or "", "bio": sn.get("description") or "", "avatar": avatar,
+            "subscribers": None if stats.get("hiddenSubscriberCount") else num("subscriberCount"),
+            "videos": num("videoCount"), "views": num("viewCount"), "created": created}
+
+
+def youtube_error(resp: httpx.Response) -> str:
+    """The reason Google gives: 'quotaExceeded', 'keyInvalid', 'accessNotConfigured' ..."""
+    try:
+        errors = resp.json()["error"].get("errors") or [{}]
+        return errors[0].get("reason") or resp.json()["error"].get("status", "")
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return ""
+
+
+def instagram_name(text: str) -> str | None:
+    t = (text or "").strip()
+    m = re.search(r"instagram\.com/([A-Za-z0-9._]+)", t)
+    name = (m.group(1) if m else t.split("?")[0]).lstrip("@").strip().strip("/")
+    return name if IG_NAME_RE.match(name) and name not in ("p", "reel", "reels", "stories", "explore") else None
+
+
+def instagram_stats(data: dict) -> dict:
+    user = data.get("data") if isinstance(data.get("data"), dict) else data
+    if isinstance(user.get("user"), dict):
+        user = user["user"]
+    avatar = _find(user, "profile_pic_url_hd", "hd_profile_pic_url_info", "profile_pic_url", "avatar_url")
+    if isinstance(avatar, dict):
+        avatar = avatar.get("url", "")
+
+    def num(*names):
+        v = _find(user, *names)
+        if isinstance(v, dict):
+            v = v.get("count")
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "name": _find(user, "username") or "", "full_name": _find(user, "full_name", "display_name") or "",
+        "id": str(_find(user, "pk", "id", "pk_id") or ""), "bio": _find(user, "biography", "bio") or "",
+        "followers": num("follower_count", "followers", "edge_followed_by"),
+        "following": num("following_count", "following", "edge_follow"),
+        "posts": num("media_count", "posts_count", "edge_owner_to_timeline_media"),
+        "verified": bool(_find(user, "is_verified", "verified")), "private": bool(_find(user, "is_private", "private")),
+        "category": _find(user, "category", "category_name") or "",
+        "country": _find(user, "country", "account_based_in", "country_code") or "",
+        "avatar": avatar if isinstance(avatar, str) else "",
+    }
+
+
+async def fetch_picture(client: httpx.AsyncClient, url: str) -> bytes:
+    if not (url or "").startswith("https://"):
+        return b""
+    try:
+        pic = await client.get(url)
+    except httpx.HTTPError:
+        return b""
+    return pic.content if pic.status_code == 200 and len(pic.content) < 8_000_000 else b""
+
+
+def count(v) -> str:
+    return f"{v:,}" if isinstance(v, int) else "—"
+
+
 # ---- the cog ------------------------------------------------------------------------------------------------------
 QR_KINDS = [("url", N_("קישור")), ("text", N_("טקסט")), ("wifi", N_("Wi-Fi")), ("email", N_("אימייל")),
             ("phone", N_("טלפון")), ("sms", N_("SMS"))]
@@ -766,6 +873,136 @@ class Tools(commands.Cog):
         if avatar_bytes:
             embed.set_thumbnail(url="attachment://tiktok.jpg")
             return await interaction.followup.send(embed=embed, file=discord.File(io.BytesIO(avatar_bytes), "tiktok.jpg"))
+        await interaction.followup.send(embed=embed)
+
+    # ---- /youtube
+    @app_commands.command(name="youtube", description=N_("מידע על ערוץ יוטיוב: מנויים, סרטונים, צפיות, מדינה ועוד"))
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(**EVERYWHERE)
+    @app_commands.describe(channel=N_("שם הערוץ ביוטיוב (@שם או קישור לערוץ)"))
+    async def youtube(self, interaction: discord.Interaction, channel: app_commands.Range[str, 1, 200]):
+        if not await self._allowed(interaction, "youtube"):
+            return
+        lang = self._lang(interaction)
+        query = youtube_query(channel)
+        if not query:
+            return await interaction.response.send_message(tr("זה לא שם ערוץ תקין ביוטיוב.", lang), ephemeral=True)
+        key = secrets_store.get("youtube_api_key")
+        if not key:
+            return await interaction.response.send_message(tr(
+                "הפקודה /youtube צריכה מפתח API חינמי של YouTube. בעל הבוט מוסיף אותו באפליקציה, בעמוד 'חיבור והגדרות'.",
+                lang), ephemeral=True)
+        await interaction.response.defer(thinking=True)
+        kind, value = query
+        fields = {"part": "snippet,statistics", "key": key}
+        tries = {"id": [{"id": value}], "user": [{"forUsername": value}, {"forHandle": "@" + value}],
+                 "handle": [{"forHandle": "@" + value}, {"forUsername": value}]}[kind]
+        item, avatar = None, b""
+        try:
+            async with httpx.AsyncClient(timeout=20, headers=HTTP_HEADERS, follow_redirects=True) as client:
+                for extra in tries:
+                    resp = await client.get(f"{YT_API}/channels", params={**fields, **extra})
+                    if resp.status_code != 200:
+                        reason = youtube_error(resp)
+                        if reason in ("quotaExceeded", "dailyLimitExceeded", "rateLimitExceeded"):
+                            return await interaction.followup.send(tr("נגמרו הבדיקות להיום במפתח החינמי. נסה שוב מחר.", lang))
+                        if resp.status_code in (400, 403):
+                            return await interaction.followup.send(tr("מפתח ה-API לא תקין. בעל הבוט צריך לבדוק אותו באפליקציה.", lang))
+                        return await interaction.followup.send(tr("שירות היוטיוב לא עונה כרגע. נסה שוב עוד מעט.", lang))
+                    items = resp.json().get("items") or []
+                    if items:
+                        item = items[0]
+                        break
+                if item is None and kind != "id":  # last try: search by name (costs more of the daily quota)
+                    resp = await client.get(f"{YT_API}/search", params={"part": "snippet", "type": "channel", "q": value,
+                                                                        "maxResults": 1, "key": key})
+                    found = (resp.json().get("items") or []) if resp.status_code == 200 else []
+                    cid = ((found[0].get("id") or {}).get("channelId") if found else "") or ""
+                    if cid:
+                        resp = await client.get(f"{YT_API}/channels", params={**fields, "id": cid})
+                        item = ((resp.json().get("items") or [None])[0]) if resp.status_code == 200 else None
+                if item is None:
+                    return await interaction.followup.send(tr("לא נמצא ערוץ יוטיוב בשם {name}.", lang, name=value))
+                st = youtube_stats(item)
+                avatar = await fetch_picture(client, st["avatar"])
+        except (httpx.HTTPError, ValueError):
+            return await interaction.followup.send(tr("שירות היוטיוב לא עונה כרגע. נסה שוב עוד מעט.", lang))
+
+        url = f"https://www.youtube.com/@{st['handle']}" if st["handle"] else f"https://www.youtube.com/channel/{st['id']}"
+        title = st["title"] + (f" (@{st['handle']})" if st["handle"] else "")
+        embed = discord.Embed(title=title[:256], url=url, description=st["bio"][:500] or None, color=0xFF0033)
+        embed.add_field(name=tr("מנויים", lang), value=count(st["subscribers"]) if st["subscribers"] is not None else tr("מוסתר", lang))
+        embed.add_field(name=tr("סרטונים", lang), value=count(st["videos"]))
+        embed.add_field(name=tr("צפיות", lang), value=count(st["views"]))
+        embed.add_field(name=tr("מדינת הערוץ", lang), value=region_text(st["country"]) if st["country"] else tr("לא צוינה", lang))
+        if st["created"]:
+            embed.add_field(name=tr("נוצר", lang), value=f"<t:{int(st['created'].timestamp())}:D>")
+        embed.add_field(name=tr("מספר ערוץ", lang), value=f"`{st['id']}`")
+        embed.set_footer(text="YouTube · " + tr("ביוטיוב אין רשימת נעקבים, לכן היא לא מוצגת", lang))
+        if avatar:
+            embed.set_thumbnail(url="attachment://youtube.jpg")
+            return await interaction.followup.send(embed=embed, file=discord.File(io.BytesIO(avatar), "youtube.jpg"))
+        await interaction.followup.send(embed=embed)
+
+    # ---- /instagram
+    @app_commands.command(name="instagram", description=N_("מידע על משתמש אינסטגרם: עוקבים, נעקבים, פוסטים ועוד"))
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(**EVERYWHERE)
+    @app_commands.describe(username=N_("שם המשתמש באינסטגרם (או קישור לפרופיל)"))
+    async def instagram(self, interaction: discord.Interaction, username: app_commands.Range[str, 1, 120]):
+        if not await self._allowed(interaction, "instagram"):
+            return
+        lang = self._lang(interaction)
+        name = instagram_name(username)
+        if not name:
+            return await interaction.response.send_message(tr("זה לא שם משתמש תקין באינסטגרם.", lang), ephemeral=True)
+        key = secrets_store.get("instagram_api_key")
+        if not key:
+            return await interaction.response.send_message(tr(
+                "הפקודה /instagram צריכה מפתח API חינמי של InstaGapi. בעל הבוט מוסיף אותו באפליקציה, בעמוד 'חיבור והגדרות'.",
+                lang), ephemeral=True)
+        await interaction.response.defer(thinking=True)
+        avatar = b""
+        try:
+            async with httpx.AsyncClient(timeout=25, headers=HTTP_HEADERS, follow_redirects=True) as client:
+                resp = await client.get(INSTAGAPI, params={"username_or_id": name}, headers={"X-Api-Key": key})
+                if resp.status_code in (401, 403):
+                    return await interaction.followup.send(tr("מפתח ה-API לא תקין. בעל הבוט צריך לבדוק אותו באפליקציה.", lang))
+                if resp.status_code in (402, 429):
+                    return await interaction.followup.send(tr("נגמרו הבדיקות במפתח החינמי כרגע. נסה שוב מאוחר יותר.", lang))
+                if resp.status_code in (400, 404):
+                    return await interaction.followup.send(tr("לא נמצא משתמש אינסטגרם בשם {name}.", lang, name=name))
+                if resp.status_code != 200:
+                    return await interaction.followup.send(tr("שירות האינסטגרם לא עונה כרגע. נסה שוב עוד מעט.", lang))
+                st = instagram_stats(resp.json())
+                if not st["name"] and st["followers"] is None:
+                    return await interaction.followup.send(tr("לא נמצא משתמש אינסטגרם בשם {name}.", lang, name=name))
+                avatar = await fetch_picture(client, st["avatar"])
+        except (httpx.HTTPError, ValueError, AttributeError):
+            return await interaction.followup.send(tr("שירות האינסטגרם לא עונה כרגע. נסה שוב עוד מעט.", lang))
+
+        handle = st["name"] or name
+        title = f"{st['full_name'] or handle} (@{handle})" + (" ✔️" if st["verified"] else "") + (" 🔒" if st["private"] else "")
+        embed = discord.Embed(title=title[:256], url=f"https://www.instagram.com/{handle}/",
+                              description=st["bio"][:500] or None, color=0xE1306C)
+        embed.add_field(name=tr("עוקבים", lang), value=count(st["followers"]))
+        embed.add_field(name=tr("נעקבים", lang), value=count(st["following"]))
+        embed.add_field(name=tr("פוסטים", lang), value=count(st["posts"]))
+        if st["country"]:
+            embed.add_field(name=tr("מדינת החשבון", lang), value=region_text(st["country"]) if len(st["country"]) == 2 else st["country"])
+        if st["category"]:
+            embed.add_field(name=tr("קטגוריה", lang), value=str(st["category"])[:100])
+        if st["id"]:
+            embed.add_field(name=tr("מספר חשבון", lang), value=f"`{st['id']}`")
+        footer = "Instagram · InstaGapi"
+        if st["private"]:
+            footer += " · " + tr("חשבון פרטי", lang)
+        if not st["country"]:
+            footer += " · " + tr("אינסטגרם לא משתף את מדינת החשבון", lang)
+        embed.set_footer(text=footer[:2048])
+        if avatar:
+            embed.set_thumbnail(url="attachment://instagram.jpg")
+            return await interaction.followup.send(embed=embed, file=discord.File(io.BytesIO(avatar), "instagram.jpg"))
         await interaction.followup.send(embed=embed)
 
     # ---- /roblox-audio

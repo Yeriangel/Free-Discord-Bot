@@ -1,0 +1,56 @@
+FREE DISCORD BOT - RUN IT 24/7 ON A BOT HOSTING SITE
+(עברית למטה)
+
+Before you start: stop the bot in the app on your PC, and turn off "Start the bot automatically".
+The same token must run in one place only, or every command gets two answers.
+
+1. On the hosting site, create a free server of type "Python" (Python 3.11 or 3.12 if you can choose).
+2. Open the server's panel -> File Manager -> Upload, and upload FreeDiscordBot-hosting.zip.
+   Right-click the zip -> Unarchive (Extract). Then delete the zip.
+   The files must be in the main folder (main.py next to requirements.txt), not inside a sub-folder.
+3. In File Manager, rename secrets.env.example to secrets.env, open it, paste your bot token after
+   BOTD_BOT_TOKEN= (and your other keys, if you use them), and Save.
+   Your token is in the Discord Developer Portal -> your app -> Bot -> Reset Token.
+4. Startup page: if there is a "Startup file" / "App py file" / "PY_FILE" box, write: main.py
+   If there is a "Requirements file" box, write: requirements.txt
+5. Console -> Start. The first start installs packages (a few minutes). Then the bot comes online.
+
+Your settings: backup.zip holds your servers' settings and data from the PC (no keys). It is imported on the
+first start and then renamed backup-imported.zip. Changes made later on the PC app are NOT copied to the host.
+
+Updates are automatic: the bot checks GitHub when it starts and every 3 hours, installs a new version
+(secrets.env and the data folder stay) and restarts by itself. Nothing to upload.
+
+Not available on hosting sites (they have no ffmpeg): /gif, Make GIF, /opacity, /file-format,
+and mp3/mp4 conversion in /roblox-audio (the original file still works).
+
+Some free plans must be renewed in the site's panel every few days. If the bot goes offline, check that first.
+
+-----------------------------------------------------------------------------------------------
+
+הבוט 24/7 באתר אחסון לבוטים
+
+לפני שמתחילים: עצור את הבוט באפליקציה במחשב, וכבה את "להפעיל את הבוט אוטומטית".
+אותו טוקן רץ רק במקום אחד, אחרת כל פקודה תקבל שתי תשובות.
+
+1. באתר האחסון, צור שרת חינמי מסוג Python (אם אפשר לבחור, 3.11 או 3.12).
+2. פתח את הפאנל של השרת -> File Manager -> Upload, והעלה את FreeDiscordBot-hosting.zip.
+   קליק ימני על הקובץ -> Unarchive (חילוץ). אחר כך מחק את ה-zip.
+   הקבצים צריכים להיות בתיקייה הראשית (main.py ליד requirements.txt), לא בתוך תיקייה נוספת.
+3. ב-File Manager, שנה את השם של secrets.env.example ל-secrets.env, פתח אותו, הדבק את הטוקן של הבוט
+   אחרי BOTD_BOT_TOKEN= (ואת שאר המפתחות אם אתה משתמש בהם), ושמור.
+   הטוקן נמצא ב-Discord Developer Portal -> האפליקציה שלך -> Bot -> Reset Token.
+4. בעמוד Startup: אם יש תיבה "Startup file" / "App py file" / "PY_FILE", כתוב: main.py
+   אם יש תיבה "Requirements file", כתוב: requirements.txt
+5. Console -> Start. בהפעלה הראשונה מותקנות חבילות (כמה דקות). אחר כך הבוט מתחבר.
+
+ההגדרות שלך: backup.zip מכיל את ההגדרות והנתונים של השרתים שלך מהמחשב (בלי מפתחות). הוא מיובא בהפעלה
+הראשונה ואז השם שלו משתנה ל-backup-imported.zip. שינויים שתעשה אחר כך באפליקציה במחשב לא עוברים לאחסון.
+
+עדכונים אוטומטיים: הבוט בודק ב-GitHub כשהוא עולה וכל 3 שעות, מתקין גרסה חדשה
+(secrets.env והתיקייה data נשארים) ומפעיל את עצמו מחדש. אין מה להעלות.
+
+לא זמין באתרי אחסון (אין בהם ffmpeg): /gif, Make GIF, /opacity, /file-format,
+והמרה ל-mp3/mp4 ב-/roblox-audio (הקובץ המקורי עדיין עובד).
+
+בחלק מהתוכניות החינמיות צריך לחדש את השרת בפאנל של האתר כל כמה ימים. אם הבוט נופל, בדוק את זה קודם.

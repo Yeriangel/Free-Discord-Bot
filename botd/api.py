@@ -560,6 +560,24 @@ def create_app(
             if resp.status_code != 200:
                 raise err(502, tr("Euler Stream החזיר שגיאה: {error}", error=resp.status_code))
             return {"ok": True, "message": tr("המפתח תקין")}
+        if name in ("youtube_api_key", "instagram_api_key"):
+            import httpx
+
+            key = secrets_store.get(name)
+            if not key:
+                raise err(400, tr("לא הוגדר מפתח"))
+            async with httpx.AsyncClient(timeout=20) as client:
+                if name == "youtube_api_key":
+                    resp = await client.get("https://www.googleapis.com/youtube/v3/channels",
+                                            params={"part": "id", "forHandle": "@YouTube", "key": key})
+                else:
+                    resp = await client.get("https://api.instagapi.com/api/user/info",
+                                            params={"username_or_id": "instagram"}, headers={"X-Api-Key": key})
+            if resp.status_code in (400, 401, 403):
+                raise err(401, tr("המפתח לא תקין"))
+            if resp.status_code != 200:
+                raise err(502, tr("השירות החזיר שגיאה: {error}", error=resp.status_code))
+            return {"ok": True, "message": tr("המפתח תקין")}
         if name == "roblox_api_key":
             import httpx
 

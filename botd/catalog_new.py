@@ -89,9 +89,11 @@ NEW_MODULES = {m["key"]: m for m in [
         _f("clear", "bool", "/clear: מחיקת ההודעות האחרונות של הבוט", True),
         _f("roblox_audio", "bool", "/roblox-audio: הורדת סאונד מרובלוקס", True),
         _f("tiktok", "bool", "/tiktok: מידע על משתמש טיקטוק", True),
+        _f("youtube", "bool", "/youtube: מידע על ערוץ יוטיוב", True),
+        _f("instagram", "bool", "/instagram: מידע על משתמש אינסטגרם", True),
     ], permissions=["embed_links", "attach_files", "read_message_history"],
        commands=["/roblox-user", "/roblox-cloth", "/pokedex", "/morse", "/binary", "/qr", "/gif", "/opacity", "/file-format",
-                 "/seed", "/pfp", "/time", "/clear", "/roblox-audio", "/tiktok", "Make GIF"]),
+                 "/seed", "/pfp", "/time", "/clear", "/roblox-audio", "/tiktok", "/youtube", "/instagram", "Make GIF"]),
 
     _m("embed_messages", "utilities", "הודעות Embed", "הודעות מעוצבות עם צבעים ותמונות, נשלחות מהאפליקציה", [
         _f("channel_id", "channel", "ערוץ", ""),

@@ -31,7 +31,8 @@ API = "https://api.github.com"
 # GitHub serves release files from these hosts (it moved downloads to release-assets.* in 2025-2026)
 ALLOWED_HOSTS = ("github.com", "api.github.com", "objects.githubusercontent.com", "codeload.github.com",
                  "release-assets.githubusercontent.com")
-SKIP_DIRS = {".venv", ".git", "__pycache__", "OldVersions", "dist"}
+# data/.local/.packages: a hosting site keeps your settings and the installed packages next to the bot (never touched)
+SKIP_DIRS = {".venv", ".git", "__pycache__", "OldVersions", "dist", "data", ".local", ".packages", ".cache"}
 REPO_RE = re.compile(r"^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$")
 MAX_ZIP = 50 * 1024 * 1024
 
@@ -164,7 +165,7 @@ async def install(repo: str, tag: str) -> dict:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(new_bytes)
     new_req = (APP_DIR / "requirements.txt").read_bytes() if (APP_DIR / "requirements.txt").exists() else b""
-    if new_req and new_req != old_req:
+    if new_req and new_req != old_req and __import__("os").environ.get("BOTD_UPDATER_PIP") != "0":  # hosting: main.py does it
         log.info(tr("מתקין חבילות שהשתנו…"))
         subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", str(APP_DIR / "requirements.txt")],
                        check=False, timeout=600)

@@ -83,6 +83,23 @@ sudo systemctl enable --now freediscordbot
 journalctl -u freediscordbot -f        # watch the log
 ```
 
+## Step 2 (option C): a free Discord bot hosting site (no server of your own)
+
+Sites with a "Python" server and a Pterodactyl panel (for example MonkeyBytes, Wispbyte) work too. On the PC:
+
+```powershell
+.venv\Scripts\python tools\make_host_package.py
+```
+
+It makes `dist\hosting\FreeDiscordBot-hosting.zip` with the bot, your settings (no keys) and a start file
+(`main.py`). Upload it in the site's File Manager, extract it, put your keys in `secrets.env`, and press Start.
+The full steps are in `STEPS.txt` inside the zip. These sites have no ffmpeg, so /gif, /opacity and
+/file-format do not work there.
+
+**Updates on hosting sites are automatic:** the start file checks this project's GitHub releases when it starts
+and every 3 hours, installs a newer version (your `secrets.env` and `data` folder stay) and restarts the bot by itself.
+To turn it off, add `BOTD_AUTO_UPDATE=0` to `secrets.env`.
+
 ## Step 3: the dashboard, from your PC
 
 The dashboard is not open to the internet (on purpose: only you should be able to control the bot). Open it through
@@ -169,6 +186,10 @@ Raspberry Pi או מחשב ישן בבית. הבוט זהה, רק בלי החל�
    מקבלים קישור עם `python -m botd url`, ופותחים אותו בדפדפן במחשב.
 
 עדכונים: `git pull` ואז `sudo docker compose up -d --build`.
+
+**אתר אחסון חינמי לבוטים (בלי שרת משלך):** במחשב מריצים `.venv\Scripts\python tools\make_host_package.py`, ומקבלים את
+`dist\hosting\FreeDiscordBot-hosting.zip`. מעלים אותו ב-File Manager של האתר, מחלצים, שמים את המפתחות ב-`secrets.env`
+ולוחצים Start. כל השלבים בקובץ `STEPS.txt` שבתוך ה-zip. באתרים האלה אין ffmpeg, לכן /gif, /opacity ו-/file-format לא עובדים שם. **עדכונים אוטומטיים:** הבוט בודק ב-GitHub כשהוא עולה וכל 3 שעות, מתקין גרסה חדשה (`secrets.env` והתיקייה `data` נשארים) ומפעיל את עצמו מחדש. לכיבוי: `BOTD_AUTO_UPDATE=0` בקובץ `secrets.env`.
 
 **הטלפון כגיבוי (Android):** אפשר להריץ את הבוט בטלפון עם Termux במצב המתנה: הטלפון בודק כל 30 שניות אם הבוט במחשב מחובר, מפעיל
 את הבוט כשהמחשב כבוי, ועוצר אותו כשהמחשב חוזר. הצעדים המלאים בחלק האנגלי, תחת "Use your Android phone as a backup".

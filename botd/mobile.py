@@ -173,4 +173,6 @@ def mobile_port(settings: dict) -> int:
 
 
 def enabled(settings: dict) -> bool:
+    if os.environ.get("BOTD_MOBILE") == "0":  # bot hosting sites: no phone listener there
+        return False
     return bool(settings.get("mobile_enabled")) or os.environ.get("BOTD_MOBILE") == "1"
