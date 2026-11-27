@@ -320,6 +320,80 @@ def media_of(message: discord.Message):
     return None
 
 
+# ---- /tiktok (through the Euler Stream API) -----------------------------------------------------------------------
+EULER = "https://api.eulerstream.com/tiktok/users/{name}/profile"
+TIKTOK_NAME_RE = re.compile(r"^[A-Za-z0-9._]{2,24}$")
+COUNTRIES = {
+    "IL": "Israel", "US": "United States", "GB": "United Kingdom", "CA": "Canada", "AU": "Australia", "DE": "Germany",
+    "FR": "France", "ES": "Spain", "IT": "Italy", "NL": "Netherlands", "BE": "Belgium", "SE": "Sweden", "NO": "Norway",
+    "DK": "Denmark", "FI": "Finland", "PL": "Poland", "PT": "Portugal", "IE": "Ireland", "CH": "Switzerland",
+    "AT": "Austria", "GR": "Greece", "TR": "Turkey", "RU": "Russia", "UA": "Ukraine", "RO": "Romania", "CZ": "Czechia",
+    "HU": "Hungary", "BR": "Brazil", "MX": "Mexico", "AR": "Argentina", "CL": "Chile", "CO": "Colombia", "PE": "Peru",
+    "JP": "Japan", "KR": "South Korea", "CN": "China", "TW": "Taiwan", "HK": "Hong Kong", "SG": "Singapore",
+    "MY": "Malaysia", "ID": "Indonesia", "PH": "Philippines", "TH": "Thailand", "VN": "Vietnam", "IN": "India",
+    "PK": "Pakistan", "BD": "Bangladesh", "SA": "Saudi Arabia", "AE": "United Arab Emirates", "EG": "Egypt",
+    "MA": "Morocco", "DZ": "Algeria", "IQ": "Iraq", "JO": "Jordan", "LB": "Lebanon", "KW": "Kuwait", "QA": "Qatar",
+    "ZA": "South Africa", "NG": "Nigeria", "KE": "Kenya", "NZ": "New Zealand", "KZ": "Kazakhstan",
+}
+
+
+def tiktok_name(text: str) -> str | None:
+    """'@name', 'name' or a tiktok.com/@name link -> 'name' (None when it is not a valid username)."""
+    t = (text or "").strip()
+    m = re.search(r"tiktok\.com/@([A-Za-z0-9._]+)", t)
+    name = (m.group(1) if m else t.split("?")[0]).lstrip("@").strip().rstrip(".")
+    return name if TIKTOK_NAME_RE.match(name) else None
+
+
+def region_text(code: str) -> str:
+    code = (code or "").upper()
+    if len(code) != 2 or not code.isalpha():
+        return code or "—"
+    flag = "".join(chr(0x1F1E6 + ord(c) - 65) for c in code)
+    return f"{flag} {COUNTRIES.get(code, code)}" + (f" ({code})" if code in COUNTRIES else "")
+
+
+def _find(data, *names):
+    """The first value stored under one of these keys, anywhere in a nested answer."""
+    stack = [data]
+    while stack:
+        cur = stack.pop(0)
+        if isinstance(cur, dict):
+            for n in names:
+                if cur.get(n) not in (None, "", []):
+                    return cur[n]
+            stack.extend(cur.values())
+        elif isinstance(cur, list):
+            stack.extend(cur)
+    return None
+
+
+def tiktok_stats(data: dict) -> dict:
+    """The fields /tiktok shows, from a basic or a full profile answer (their shapes differ)."""
+    user = data.get("user") if isinstance(data.get("user"), dict) else data
+    avatar = _find(user, "avatar_larger", "avatarLarger", "avatar_medium", "avatarMedium", "avatar_thumb", "avatarThumb")
+    if isinstance(avatar, dict):
+        avatar = _find(avatar, "url_list", "urlList") or ""
+    if isinstance(avatar, list):
+        avatar = avatar[0] if avatar else ""
+
+    def num(*names):
+        v = _find(user, *names)
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "name": _find(user, "unique_id", "uniqueId") or "", "nickname": _find(user, "nickname") or "",
+        "id": str(_find(user, "numeric_user_id", "user_id", "id_str", "uid") or ""), "region": _find(user, "region") or "",
+        "followers": num("follower_count", "followerCount"), "following": num("following_count", "followingCount"),
+        "likes": num("heart_count", "heartCount", "total_favorited", "heart", "like_count", "likes_count"),
+        "videos": num("video_count", "videoCount", "aweme_count"), "bio": _find(user, "signature", "bio_description") or "",
+        "verified": bool(_find(user, "verified", "is_verified")), "avatar": avatar if isinstance(avatar, str) else "",
+    }
+
+
 # ---- the cog ------------------------------------------------------------------------------------------------------
 QR_KINDS = [("url", N_("קישור")), ("text", N_("טקסט")), ("wifi", N_("Wi-Fi")), ("email", N_("אימייל")),
             ("phone", N_("טלפון")), ("sms", N_("SMS"))]
@@ -632,6 +706,66 @@ class Tools(commands.Cog):
         if image:
             embed.set_image(url=image)
         embed.description = tr("לא מצאתי את התבנית של הפריט הזה (אולי הוא ישן מאוד). זו התמונה של הפריט.", lang)
+        await interaction.followup.send(embed=embed)
+
+    # ---- /tiktok
+    @app_commands.command(name="tiktok", description=N_("מידע על משתמש טיקטוק: עוקבים, לייקים, מדינה ועוד"))
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(**EVERYWHERE)
+    @app_commands.describe(username=N_("שם המשתמש בטיקטוק (או קישור לפרופיל)"))
+    async def tiktok(self, interaction: discord.Interaction, username: app_commands.Range[str, 1, 120]):
+        if not await self._allowed(interaction, "tiktok"):
+            return
+        lang = self._lang(interaction)
+        name = tiktok_name(username)
+        if not name:
+            return await interaction.response.send_message(tr("זה לא שם משתמש תקין בטיקטוק.", lang), ephemeral=True)
+        await interaction.response.defer(thinking=True)
+        key = secrets_store.get("eulerstream_key")
+        avatar_bytes = b""
+        try:
+            async with httpx.AsyncClient(timeout=25, headers=HTTP_HEADERS, follow_redirects=True) as client:
+                resp = None
+                if key:  # the full profile (with total likes) needs Euler Stream's free API key
+                    resp = await client.get(EULER.format(name=name), headers={"x-api-key": key})
+                if resp is None or resp.status_code in (401, 402, 403, 429):
+                    resp = await client.get(EULER.format(name=name) + "/basic")
+                if resp.status_code in (400, 404):
+                    return await interaction.followup.send(tr("לא נמצא משתמש טיקטוק בשם {name}.", lang, name=name))
+                if resp.status_code == 429:
+                    return await interaction.followup.send(tr("יותר מדי בדיקות כרגע. נסה שוב בעוד דקה.", lang))
+                if resp.status_code != 200:
+                    return await interaction.followup.send(tr("שירות הטיקטוק לא עונה כרגע. נסה שוב עוד מעט.", lang))
+                st = tiktok_stats(resp.json())
+                if st["avatar"].startswith("https://"):
+                    pic = await client.get(st["avatar"])
+                    if pic.status_code == 200 and len(pic.content) < 8_000_000:
+                        avatar_bytes = pic.content
+        except (httpx.HTTPError, ValueError):
+            return await interaction.followup.send(tr("שירות הטיקטוק לא עונה כרגע. נסה שוב עוד מעט.", lang))
+
+        def n(v):
+            return f"{v:,}" if isinstance(v, int) else "—"
+
+        title = f"{st['nickname'] or st['name'] or name} (@{st['name'] or name})" + (" ✔️" if st["verified"] else "")
+        embed = discord.Embed(title=title[:256], url=f"https://www.tiktok.com/@{st['name'] or name}",
+                              description=st["bio"][:500] or None, color=themed(lang, COLOR_INFO))
+        embed.add_field(name=tr("עוקבים", lang), value=n(st["followers"]))
+        embed.add_field(name=tr("נעקבים", lang), value=n(st["following"]))
+        if st["likes"] is not None:
+            embed.add_field(name=tr("לייקים", lang), value=n(st["likes"]))
+        if st["videos"] is not None:
+            embed.add_field(name=tr("סרטונים", lang), value=n(st["videos"]))
+        embed.add_field(name=tr("מדינת החשבון", lang), value=region_text(st["region"]))
+        if st["id"]:
+            embed.add_field(name=tr("מספר חשבון", lang), value=f"`{st['id']}`")
+        footer = "TikTok · Euler Stream"
+        if st["likes"] is None:
+            footer += " · " + tr("סך הלייקים מוצג רק עם מפתח API חינמי של Euler Stream (באפליקציה, בעמוד 'חיבור והגדרות')", lang)
+        embed.set_footer(text=footer[:2048])
+        if avatar_bytes:
+            embed.set_thumbnail(url="attachment://tiktok.jpg")
+            return await interaction.followup.send(embed=embed, file=discord.File(io.BytesIO(avatar_bytes), "tiktok.jpg"))
         await interaction.followup.send(embed=embed)
 
     # ---- /roblox-audio

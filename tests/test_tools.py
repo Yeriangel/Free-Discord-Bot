@@ -389,6 +389,21 @@ def test_audio_formats():
         assert tools.audio_ext(mp3) == "mp3" and mp4[4:8] == b"ftyp"
 
 
+def test_tiktok_lookup_parsing():
+    assert tools.tiktok_name("@tiktok") == "tiktok" and tools.tiktok_name("https://www.tiktok.com/@khaby.lame?lang=en") == "khaby.lame"
+    assert tools.tiktok_name("bad name!") is None and tools.tiktok_name("a") is None
+    assert tools.region_text("IL") == "🇮🇱 Israel (IL)" and tools.region_text("") == "—"
+    basic = {"code": 200, "user": {"avatar_larger": ["https://x/a.jpeg"], "nickname": "TikTok", "region": "AU", "unique_id": "tiktok",
+                                   "extra_info": {"follower_count": 97100000, "following_count": 2, "numeric_user_id": "107955"}}}
+    st = tools.tiktok_stats(basic)
+    assert (st["name"], st["nickname"], st["region"], st["followers"], st["following"], st["id"], st["likes"], st["avatar"]) == \
+        ("tiktok", "TikTok", "AU", 97100000, 2, "107955", None, "https://x/a.jpeg")
+    full = {"user": {"uniqueId": "x", "nickname": "X", "region": "IL", "verified": True, "signature": "hi",
+                     "avatarLarger": "https://x/b.jpeg", "stats": {"followerCount": 10, "followingCount": 3, "heartCount": 999, "videoCount": 7}}}
+    st = tools.tiktok_stats(full)
+    assert (st["likes"], st["videos"], st["followers"], st["verified"], st["bio"], st["avatar"]) == (999, 7, 10, True, "hi", "https://x/b.jpeg")
+
+
 def test_english_time_zone_names():
     import re
 
@@ -404,7 +419,7 @@ def test_english_time_zone_names():
 
 def test_commands_install_everywhere():
     names = {c.name: c for c in tools.Tools.__cog_app_commands__}
-    assert set(names) == {"roblox-user", "pokedex", "morse", "binary", "qr", "gif", "opacity", "file-format", "seed", "pfp", "time", "roblox-cloth", "clear", "roblox-audio"}
+    assert set(names) == {"roblox-user", "pokedex", "morse", "binary", "qr", "gif", "opacity", "file-format", "seed", "pfp", "time", "roblox-cloth", "clear", "roblox-audio", "tiktok"}
     for c in names.values():
         if c.name == "clear":  # deletes the bot's own messages: only where the bot itself is
             assert c.allowed_installs.guild and not c.allowed_installs.user

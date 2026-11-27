@@ -655,6 +655,10 @@ function viewConnection() {
       <p class="desc" style="margin:10px 0">${t('לא חובה. /roblox-cloth מוצא תבניות לבד. מפתח חינמי מוסיף ל-/roblox-audio גם סאונדים שהעלו שחקנים: ב-<a href="https://create.roblox.com/dashboard/credentials" target="_blank">Creator Dashboard</a> לוחצים Create API Key, מוסיפים את Legacy Asset עם ההרשאה legacy-asset:manage, ומעתיקים את המפתח.')}</p>
       ${secretField("roblox_api_key", "Roblox Open Cloud API Key", "")}
     </details>
+    <details class="card section"><summary><b>${esc(t("TikTok (לא חובה, לסך הלייקים ב-/tiktok)"))}</b></summary>
+      <p class="desc" style="margin:10px 0">${t('הפקודה /tiktok עובדת גם בלי מפתח (עוקבים, נעקבים, מדינה, מספר חשבון ותמונה). מפתח חינמי של <a href="https://www.eulerstream.com" target="_blank" rel="noopener">Euler Stream</a> מוסיף את סך הלייקים ופרטים נוספים: נרשמים באתר, יוצרים API Key ומדביקים כאן.')}</p>
+      ${secretField("eulerstream_key", "Euler Stream API Key", "")}
+    </details>
     ${viewAccounts()}
     <div class="card section">
       <h3>מי מורשה לדבר עם הבוט</h3>

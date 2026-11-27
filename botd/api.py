@@ -547,6 +547,19 @@ def create_app(
             if resp.status_code != 200:
                 raise err(401, tr("Twitch דחה את הפרטים"))
             return {"ok": True, "message": tr("הפרטים של Twitch תקינים")}
+        if name == "eulerstream_key":
+            import httpx
+
+            key = secrets_store.get("eulerstream_key")
+            if not key:
+                raise err(400, tr("לא הוגדר מפתח"))
+            async with httpx.AsyncClient(timeout=20) as client:
+                resp = await client.get("https://api.eulerstream.com/tiktok/users/tiktok/profile", headers={"x-api-key": key})
+            if resp.status_code in (401, 403):
+                raise err(401, tr("המפתח לא תקין"))
+            if resp.status_code != 200:
+                raise err(502, tr("Euler Stream החזיר שגיאה: {error}", error=resp.status_code))
+            return {"ok": True, "message": tr("המפתח תקין")}
         if name == "roblox_api_key":
             import httpx
 
